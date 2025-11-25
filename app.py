@@ -26,6 +26,6 @@ def generar_ruta():
 
 if __name__ == "__main__":
     import os
-    port = int(os.environ.get("PORT", 5000))
+    port = int(os.environ.get("PORT", 9190))
     print(">>> Levantando Flask en puerto", port, flush=True)
     app.run(host="0.0.0.0", port=port)
