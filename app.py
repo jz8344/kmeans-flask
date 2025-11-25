@@ -1,4 +1,5 @@
 from flask import Flask, jsonify, request
+import os
 
 print(">>> app.py importado correctamente", flush=True)
 
@@ -25,7 +26,6 @@ def generar_ruta():
 
 
 if __name__ == "__main__":
-    import os
-    port = int(os.environ.get("PORT", 9190))
+    port = int(os.environ.get("PORT", 5000))
     print(">>> Levantando Flask en puerto", port, flush=True)
     app.run(host="0.0.0.0", port=port)
