@@ -9,8 +9,12 @@ def health():
     print(">>> Entró a /health", flush=True)
     return jsonify({"status": "ok"}), 200
 
-@app.route("/api/generar-ruta", methods=["POST"])
+@app.route("/api/generar-ruta", methods=["GET", "POST"])
 def generar_ruta():
+    if request.method == "GET":
+        print(">>> Entró a /api/generar-ruta con GET", flush=True)
+        return jsonify({"status": "ok", "method": "GET"}), 200
+
     data = request.get_json(silent=True) or {}
     print(">>> Body recibido en /api/generar-ruta:", data, flush=True)
 
@@ -18,6 +22,7 @@ def generar_ruta():
         "success": True,
         "echo": data
     }), 200
+
 
 if __name__ == "__main__":
     import os
