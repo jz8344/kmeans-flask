@@ -8,7 +8,7 @@ import numpy as np
 import math
 from sklearn.cluster import KMeans
 from datetime import datetime, timedelta
-
+print(">>> app.py importado correctamente", flush=True)
 app = Flask(__name__)
 CORS(app)
 
