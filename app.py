@@ -19,7 +19,7 @@ def health():
 @app.route('/api/generar-ruta', methods=['POST'])
 def generar_ruta():
     try:
-        data = request.json
+        data = request.get_json(silent=True) or {}
         
         viaje_id = data.get('viaje_id')
         puntos = data.get('puntos', [])
