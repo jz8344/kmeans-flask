@@ -23,16 +23,23 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Configuración de CORS
-# Permitir todos los orígenes para evitar problemas de CORS
+# Configuración de CORS mejorada para Railway
+ALLOWED_ORIGINS = [
+    "https://frontend-production-a12b.up.railway.app",
+    "https://web-production-86356.up.railway.app",
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "*"  # Fallback para desarrollo
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Permitir todos los orígenes
-    allow_credentials=False,  # No usar credenciales con wildcard
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],  # Métodos permitidos
-    allow_headers=["*"],  # Permitir todos los headers
-    expose_headers=["*"],  # Exponer todos los headers en la respuesta
-    max_age=3600,  # Cache preflight por 1 hora
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"],
+    allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=3600,
 )
 
 # Middleware para logging de requests
@@ -240,11 +247,34 @@ class DriverBehaviorAnalysis:
 # Endpoints
 @app.get("/")
 def read_root():
-    return {"message": "TrailynSafe Analytics API is running"}
+    return {
+        "message": "TrailynSafe Analytics API is running",
+        "version": "1.0.0",
+        "endpoints": [
+            "/api/analyze/driver",
+            "/api/drivers",
+            "/health"
+        ]
+    }
 
 @app.get("/health")
 def health_check():
-    return {"status": "ok"}
+    db_status = "connected" if engine else "not_configured"
+    return {
+        "status": "ok",
+        "database": db_status,
+        "timestamp": pd.Timestamp.now().isoformat()
+    }
+
+@app.options("/api/analyze/driver")
+def options_analyze():
+    """Manejar preflight requests explícitamente"""
+    return {"message": "OK"}
+
+@app.options("/api/drivers")
+def options_drivers():
+    """Manejar preflight requests explícitamente"""
+    return {"message": "OK"}
 
 @app.post("/api/analyze/driver", response_model=AnalysisResponse)
 def analyze_driver(request: AnalysisRequest, db: Session = Depends(get_db)):
