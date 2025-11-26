@@ -26,8 +26,8 @@ app = FastAPI(
 # Configuración de CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Permitir todos los orígenes en desarrollo/producción por ahora
-    allow_credentials=True,
+    allow_origins=["*"],  # Permitir cualquier origen
+    allow_credentials=False, # Debe ser False si allow_origins es ["*"]
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -51,7 +51,12 @@ if DATABASE_URL:
 # Dependencia para obtener la sesión de BD
 def get_db():
     if SessionLocal is None:
-        raise HTTPException(status_code=503, detail="Base de datos no configurada")
+        logger.warning("SessionLocal es None. Base de datos no configurada.")
+        # Si no hay BD, permitimos continuar pero las consultas fallarán controladamente
+        # raise HTTPException(status_code=503, detail="Base de datos no configurada")
+        yield None
+        return
+
     db = SessionLocal()
     try:
         yield db
@@ -232,8 +237,12 @@ def analyze_driver(request: AnalysisRequest, db: Session = Depends(get_db)):
     
     # Intentar obtener datos reales
     has_real_data = False
-    if request.driver_id:
-        has_real_data = analyzer.fetch_data_from_db(db, request.driver_id)
+    if request.driver_id and db is not None:
+        try:
+            has_real_data = analyzer.fetch_data_from_db(db, request.driver_id)
+        except Exception as e:
+            logger.error(f"Error al intentar obtener datos reales: {e}")
+            has_real_data = False
     
     # Si no hay datos reales, generar simulados
     if not has_real_data:
@@ -241,28 +250,32 @@ def analyze_driver(request: AnalysisRequest, db: Session = Depends(get_db)):
         analyzer.generate_sample_data(n_samples=request.n_samples)
     
     # Análisis
-    optimal_k = analyzer.find_optimal_clusters(max_clusters=5)
-    stats, labels = analyzer.perform_clustering(n_clusters=optimal_k)
-    viz_data = analyzer.get_visualization_data()
-    
-    # Recomendaciones
-    recommendations = []
-    for cluster_id, data in stats.items():
-        status = data['status']
-        if status == 'Normal':
-            recommendations.append(f"Grupo {status}: Continuar monitoreo regular.")
-        elif status == 'Precaución':
-            recommendations.append(f"Grupo {status}: Sugerir descansos más frecuentes.")
-        elif status == 'Riesgo Alto':
-            recommendations.append(f"Grupo {status}: ALERTA - Revisar comportamiento inmediatamente.")
-            
-    return AnalysisResponse(
-        driver_id=request.driver_id,
-        optimal_k=optimal_k,
-        clusters=stats,
-        recommendations=recommendations,
-        visualization_data=viz_data
-    )
+    try:
+        optimal_k = analyzer.find_optimal_clusters(max_clusters=5)
+        stats, labels = analyzer.perform_clustering(n_clusters=optimal_k)
+        viz_data = analyzer.get_visualization_data()
+        
+        # Recomendaciones
+        recommendations = []
+        for cluster_id, data in stats.items():
+            status = data['status']
+            if status == 'Normal':
+                recommendations.append(f"Grupo {status}: Continuar monitoreo regular.")
+            elif status == 'Precaución':
+                recommendations.append(f"Grupo {status}: Sugerir descansos más frecuentes.")
+            elif status == 'Riesgo Alto':
+                recommendations.append(f"Grupo {status}: ALERTA - Revisar comportamiento inmediatamente.")
+                
+        return AnalysisResponse(
+            driver_id=request.driver_id,
+            optimal_k=optimal_k,
+            clusters=stats,
+            recommendations=recommendations,
+            visualization_data=viz_data
+        )
+    except Exception as e:
+        logger.error(f"Error durante el análisis: {e}")
+        raise HTTPException(status_code=500, detail=f"Error interno en el análisis: {str(e)}")
 
 @app.get("/api/drivers")
 def get_drivers(db: Session = Depends(get_db)):
@@ -270,13 +283,17 @@ def get_drivers(db: Session = Depends(get_db)):
     Obtiene lista de choferes para el selector en el frontend
     """
     try:
+        logger.info("Intentando obtener choferes de la BD...")
         query = text("SELECT id, nombre, apellidos FROM choferes ORDER BY nombre")
         result = db.execute(query).fetchall()
         drivers = [{"id": row.id, "nombre": f"{row.nombre} {row.apellidos}"} for row in result]
+        logger.info(f"Se encontraron {len(drivers)} choferes.")
         return drivers
     except Exception as e:
         logger.error(f"Error fetching drivers: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        # En caso de error de BD, devolver lista vacía o simulada para no romper el frontend con 500
+        logger.warning("Devolviendo lista vacía debido a error de BD.")
+        return []
 
 if __name__ == "__main__":
     import uvicorn
