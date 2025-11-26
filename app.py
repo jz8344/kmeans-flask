@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="TrailynSafe Analytics API",
     description="API para análisis avanzado de comportamiento de conductores usando K-Means",
-    version="1.0.0"
+    version="1.0.1"
 )
 
 # Configuración de CORS mejorada para Railway
