@@ -276,6 +276,15 @@ def options_drivers():
     """Manejar preflight requests explícitamente"""
     return {"message": "OK"}
 
+@app.get("/api/analyze/driver/test")
+def test_analyze():
+    """Endpoint de prueba para verificar que el servicio funciona"""
+    return {
+        "message": "El servicio está funcionando correctamente",
+        "instructions": "Este endpoint requiere POST con JSON: {driver_id: 1, n_samples: 1000}",
+        "example_curl": "curl -X POST https://kmeans-flask-production.up.railway.app/api/analyze/driver -H 'Content-Type: application/json' -d '{\"driver_id\":1,\"n_samples\":100}'"
+    }
+
 @app.post("/api/analyze/driver", response_model=AnalysisResponse)
 def analyze_driver(request: AnalysisRequest, db: Session = Depends(get_db)):
     analyzer = DriverBehaviorAnalysis()
