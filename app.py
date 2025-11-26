@@ -2,7 +2,7 @@ import os
 import logging
 import pandas as pd
 import numpy as np
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Response
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, Session
@@ -24,22 +24,34 @@ app = FastAPI(
 )
 
 # Configuración de CORS
-# Se recomienda ser específico con los orígenes en producción
-origins = [
-    "http://localhost:5173",
-    "http://localhost:3000",
-    "https://frontend-production-a12b.up.railway.app",
-    "https://web-production-86356.up.railway.app",
-    "*" # En caso de duda, permitir todo pero con credentials=False
-]
-
+# Permitir todos los orígenes para evitar problemas de CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # Para permitir todo sin credenciales
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=["*"],  # Permitir todos los orígenes
+    allow_credentials=False,  # No usar credenciales con wildcard
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],  # Métodos permitidos
+    allow_headers=["*"],  # Permitir todos los headers
+    expose_headers=["*"],  # Exponer todos los headers en la respuesta
+    max_age=3600,  # Cache preflight por 1 hora
 )
+
+# Middleware para agregar headers CORS explícitamente
+@app.middleware("http")
+async def add_cors_headers(request, call_next):
+    # Si es una petición OPTIONS, responder inmediatamente
+    if request.method == "OPTIONS":
+        response = Response(status_code=200)
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+        response.headers["Access-Control-Max-Age"] = "3600"
+        return response
+    
+    response = await call_next(request)
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "*"
+    return response
 
 # Middleware para logging de requests
 @app.middleware("http")
