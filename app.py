@@ -24,18 +24,18 @@ app = FastAPI(
 )
 
 # Configuración de CORS mejorada para Railway
+# IMPORTANTE: No usar allow_credentials=True con wildcard "*"
 ALLOWED_ORIGINS = [
     "https://frontend-production-a12b.up.railway.app",
     "https://web-production-86356.up.railway.app",
     "http://localhost:5173",
-    "http://localhost:3000",
-    "*"  # Fallback para desarrollo
+    "http://localhost:3000"
 ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=True,
+    allow_origins=["*"],  # Permitir todos los orígenes
+    allow_credentials=False,  # DEBE ser False cuando se usa wildcard
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"],
     allow_headers=["*"],
     expose_headers=["*"],
