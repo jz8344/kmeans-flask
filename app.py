@@ -24,13 +24,34 @@ app = FastAPI(
 )
 
 # Configuración de CORS
+# Se recomienda ser específico con los orígenes en producción
+origins = [
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "https://frontend-production-a12b.up.railway.app",
+    "https://web-production-86356.up.railway.app",
+    "*" # En caso de duda, permitir todo pero con credentials=False
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Permitir cualquier origen
-    allow_credentials=False, # Debe ser False si allow_origins es ["*"]
+    allow_origins=["*"], # Para permitir todo sin credenciales
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Middleware para logging de requests
+@app.middleware("http")
+async def log_requests(request, call_next):
+    logger.info(f"Request: {request.method} {request.url}")
+    try:
+        response = await call_next(request)
+        logger.info(f"Response status: {response.status_code}")
+        return response
+    except Exception as e:
+        logger.error(f"Request failed: {e}")
+        raise
 
 # Configuración de Base de Datos
 DATABASE_URL = os.getenv("DATABASE_URL")
