@@ -20,7 +20,8 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="TrailynSafe Analytics API",
     description="API para análisis avanzado de comportamiento de conductores usando K-Means",
-    version="1.0.0"
+    version="1.0.0",
+    root_path="",  # Para compatibilidad con proxies como Railway
 )
 
 # Configuración de CORS
@@ -244,6 +245,12 @@ def read_root():
 
 @app.get("/health")
 def health_check():
+    return {"status": "ok"}
+
+# Endpoint explícito para OPTIONS (preflight)
+@app.options("/api/analyze/driver")
+async def options_analyze_driver():
+    logger.info("OPTIONS request received for /api/analyze/driver")
     return {"status": "ok"}
 
 @app.post("/api/analyze/driver", response_model=AnalysisResponse)
