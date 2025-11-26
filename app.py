@@ -249,11 +249,13 @@ class DriverBehaviorAnalysis:
 def read_root():
     return {
         "message": "TrailynSafe Analytics API is running",
-        "version": "1.0.0",
+        "version": "1.0.1",
+        "status": "healthy",
         "endpoints": [
-            "/api/analyze/driver",
-            "/api/drivers",
-            "/health"
+            "/api/analyze/driver (POST)",
+            "/api/analyze/driver/test (GET)",
+            "/api/drivers (GET)",
+            "/health (GET)"
         ]
     }
 
@@ -336,6 +338,10 @@ def get_drivers(db: Session = Depends(get_db)):
     """
     Obtiene lista de choferes para el selector en el frontend
     """
+    if db is None:
+        logger.warning("Base de datos no disponible. Devolviendo lista vacía.")
+        return []
+        
     try:
         logger.info("Intentando obtener choferes de la BD...")
         query = text("SELECT id, nombre, apellidos FROM choferes ORDER BY nombre")
