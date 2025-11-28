@@ -467,6 +467,15 @@ class DriverBehaviorAnalysis:
             logger.error("DataFrame de features está vacío")
             raise ValueError("No hay datos para realizar clustering")
         
+        # VALIDACIÓN CRÍTICA: n_samples debe ser >= n_clusters
+        n_samples = len(features)
+        if n_samples < n_clusters:
+            logger.warning(f"⚠️ n_samples={n_samples} < n_clusters={n_clusters}. Ajustando n_clusters a {n_samples}.")
+            n_clusters = max(1, n_samples - 1)  # Usar n_samples - 1 clusters
+            if n_clusters < 2:
+                logger.error("Insuficientes datos para clustering (< 2 registros)")
+                raise ValueError(f"Se requieren al menos 2 registros para K-means. Solo hay {n_samples}.")
+        
         scaled_features = self.scaler.fit_transform(features)
         
         self.kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
@@ -503,37 +512,45 @@ class DriverBehaviorAnalysis:
         for cluster in sorted(self.df['cluster'].unique()):
             cluster_data = self.df[self.df['cluster'] == cluster]
             
+            # Función auxiliar para convertir valores a float sin NaN (JSON compliant)
+            def safe_float(value, default=0.0):
+                try:
+                    result = float(value)
+                    return default if pd.isna(result) or np.isnan(result) or np.isinf(result) else result
+                except (ValueError, TypeError):
+                    return default
+            
             stats[str(cluster)] = {
                 "status": cluster_labels.get(cluster, f"Cluster {cluster}"),
                 "count": int(len(cluster_data)),
                 
                 # Score general
-                "score_general_mean": float(cluster_data['score_general'].mean()) if 'score_general' in cluster_data else 0,
-                "score_general_std": float(cluster_data['score_general'].std()) if 'score_general' in cluster_data else 0,
+                "score_general_mean": safe_float(cluster_data['score_general'].mean() if 'score_general' in cluster_data else 0),
+                "score_general_std": safe_float(cluster_data['score_general'].std() if 'score_general' in cluster_data else 0),
                 
                 # Asistencias
-                "tasa_asistencia_mean": float(cluster_data['tasa_asistencia'].mean()) if 'tasa_asistencia' in cluster_data else 0,
-                "tasa_asistencia_std": float(cluster_data['tasa_asistencia'].std()) if 'tasa_asistencia' in cluster_data else 0,
+                "tasa_asistencia_mean": safe_float(cluster_data['tasa_asistencia'].mean() if 'tasa_asistencia' in cluster_data else 0),
+                "tasa_asistencia_std": safe_float(cluster_data['tasa_asistencia'].std() if 'tasa_asistencia' in cluster_data else 0),
                 
                 # Ocupación
-                "tasa_ocupacion_mean": float(cluster_data['tasa_ocupacion'].mean()) if 'tasa_ocupacion' in cluster_data else 0,
-                "tasa_ocupacion_std": float(cluster_data['tasa_ocupacion'].std()) if 'tasa_ocupacion' in cluster_data else 0,
+                "tasa_ocupacion_mean": safe_float(cluster_data['tasa_ocupacion'].mean() if 'tasa_ocupacion' in cluster_data else 0),
+                "tasa_ocupacion_std": safe_float(cluster_data['tasa_ocupacion'].std() if 'tasa_ocupacion' in cluster_data else 0),
                 
                 # Eficiencia de ruta
-                "eficiencia_ruta_mean": float(cluster_data['eficiencia_ruta'].mean()) if 'eficiencia_ruta' in cluster_data else 0,
-                "eficiencia_ruta_std": float(cluster_data['eficiencia_ruta'].std()) if 'eficiencia_ruta' in cluster_data else 0,
+                "eficiencia_ruta_mean": safe_float(cluster_data['eficiencia_ruta'].mean() if 'eficiencia_ruta' in cluster_data else 0),
+                "eficiencia_ruta_std": safe_float(cluster_data['eficiencia_ruta'].std() if 'eficiencia_ruta' in cluster_data else 0),
                 
                 # Puntualidad
-                "score_puntualidad_mean": float(cluster_data['score_puntualidad'].mean()) if 'score_puntualidad' in cluster_data else 0,
+                "score_puntualidad_mean": safe_float(cluster_data['score_puntualidad'].mean() if 'score_puntualidad' in cluster_data else 0),
                 
                 # Velocidad
-                "velocidad_promedio_kmh_mean": float(cluster_data['velocidad_promedio_kmh'].mean()) if 'velocidad_promedio_kmh' in cluster_data else 0,
-                "velocidad_maxima_kmh_mean": float(cluster_data['velocidad_maxima_kmh'].mean()) if 'velocidad_maxima_kmh' in cluster_data else 0,
+                "velocidad_promedio_kmh_mean": safe_float(cluster_data['velocidad_promedio_kmh'].mean() if 'velocidad_promedio_kmh' in cluster_data else 0),
+                "velocidad_maxima_kmh_mean": safe_float(cluster_data['velocidad_maxima_kmh'].mean() if 'velocidad_maxima_kmh' in cluster_data else 0),
                 
                 # Actividad
-                "actividad_gps_mean": float(cluster_data['actividad_gps'].mean()) if 'actividad_gps' in cluster_data else 0,
-                "total_confirmaciones_mean": float(cluster_data['total_confirmaciones'].mean()) if 'total_confirmaciones' in cluster_data else 0,
-                "distancia_total_km_mean": float(cluster_data['distancia_total_km'].mean()) if 'distancia_total_km' in cluster_data else 0
+                "actividad_gps_mean": safe_float(cluster_data['actividad_gps'].mean() if 'actividad_gps' in cluster_data else 0),
+                "total_confirmaciones_mean": safe_float(cluster_data['total_confirmaciones'].mean() if 'total_confirmaciones' in cluster_data else 0),
+                "distancia_total_km_mean": safe_float(cluster_data['distancia_total_km'].mean() if 'distancia_total_km' in cluster_data else 0)
             }
             
         return stats, cluster_labels
@@ -781,10 +798,18 @@ def analyze_driver(request: AnalysisRequest, db: Session = Depends(get_db)):
             logger.error(f"Error al obtener datos reales: {e}")
             has_real_data = False
     
-    # Si no hay datos reales, generar simulados
+    # Si no hay datos reales O hay muy pocos, generar simulados
     if not has_real_data:
         logger.info(f"Usando datos simulados (no se encontraron datos reales)")
         analyzer.generate_sample_data(n_samples=request.n_samples)
+    elif len(analyzer.df) < 3:
+        logger.warning(f"⚠️ Solo {len(analyzer.df)} registros reales. Generando datos simulados complementarios para análisis robusto.")
+        # Guardar datos reales
+        real_data_backup = analyzer.df.copy()
+        # Generar datos simulados
+        analyzer.generate_sample_data(n_samples=max(50, request.n_samples))
+        # Agregar nota en el análisis
+        has_real_data = False  # Marcar como simulado para la recomendación
     
     # Realizar análisis K-means
     try:
@@ -1103,6 +1128,279 @@ async def analyze_system_stats(db: Session = Depends(get_db)):
             buffer.seek(0)
             plots['trips_by_status_chart'] = f"data:image/png;base64,{base64.b64encode(buffer.read()).decode()}"
             plt.close(fig)
+        
+        # ===== GRÁFICAS AVANZADAS =====
+        
+        # GRÁFICA 6: Matriz de Correlación entre Entidades
+        try:
+            correlation_query = text("""
+                SELECT 
+                    DATE(u.fecha_registro) as fecha,
+                    COUNT(DISTINCT u.id) as usuarios,
+                    COUNT(DISTINCT h.id) as estudiantes,
+                    COUNT(DISTINCT v.id) as viajes,
+                    COUNT(DISTINCT cv.id) as confirmaciones
+                FROM usuarios u
+                LEFT JOIN hijos h ON DATE(h.created_at) = DATE(u.fecha_registro)
+                LEFT JOIN viajes v ON DATE(v.created_at) = DATE(u.fecha_registro)
+                LEFT JOIN confirmaciones_viaje cv ON DATE(cv.created_at) = DATE(u.fecha_registro)
+                WHERE u.fecha_registro >= CURRENT_DATE - INTERVAL '90 days'
+                GROUP BY DATE(u.fecha_registro)
+                ORDER BY fecha
+            """)
+            corr_result = db.execute(correlation_query)
+            corr_data = [{"fecha": str(row[0]), "usuarios": row[1], "estudiantes": row[2], "viajes": row[3], "confirmaciones": row[4]} for row in corr_result]
+            
+            if corr_data:
+                df_corr = pd.DataFrame(corr_data)
+                df_corr_numeric = df_corr[['usuarios', 'estudiantes', 'viajes', 'confirmaciones']]
+                
+                if not df_corr_numeric.empty and len(df_corr_numeric) > 1:
+                    fig, ax = plt.subplots(figsize=(10, 8))
+                    correlation_matrix = df_corr_numeric.corr()
+                    
+                    sns.heatmap(correlation_matrix, annot=True, fmt='.2f', cmap='coolwarm', 
+                               center=0, square=True, linewidths=1, cbar_kws={"shrink": 0.8},
+                               ax=ax, vmin=-1, vmax=1)
+                    
+                    ax.set_title('Matriz de Correlación entre Entidades del Sistema', 
+                                fontsize=15, fontweight='bold', pad=20)
+                    plt.tight_layout()
+                    
+                    buffer = BytesIO()
+                    fig.savefig(buffer, format='png', dpi=150, bbox_inches='tight')
+                    buffer.seek(0)
+                    plots['correlation_matrix'] = f"data:image/png;base64,{base64.b64encode(buffer.read()).decode()}"
+                    plt.close(fig)
+        except Exception as e:
+            logger.warning(f"No se pudo generar matriz de correlación: {e}")
+        
+        # GRÁFICA 7: Crecimiento Comparativo Temporal (Multi-línea)
+        try:
+            growth_query = text("""
+                SELECT 
+                    'Usuarios' as tipo,
+                    DATE_TRUNC('week', fecha_registro) as periodo,
+                    COUNT(*) as cantidad
+                FROM usuarios
+                WHERE fecha_registro >= CURRENT_DATE - INTERVAL '12 weeks'
+                GROUP BY DATE_TRUNC('week', fecha_registro)
+                
+                UNION ALL
+                
+                SELECT 
+                    'Estudiantes' as tipo,
+                    DATE_TRUNC('week', created_at) as periodo,
+                    COUNT(*) as cantidad
+                FROM hijos
+                WHERE created_at >= CURRENT_DATE - INTERVAL '12 weeks'
+                GROUP BY DATE_TRUNC('week', created_at)
+                
+                UNION ALL
+                
+                SELECT 
+                    'Viajes' as tipo,
+                    DATE_TRUNC('week', created_at) as periodo,
+                    COUNT(*) as cantidad
+                FROM viajes
+                WHERE created_at >= CURRENT_DATE - INTERVAL '12 weeks'
+                GROUP BY DATE_TRUNC('week', created_at)
+                
+                ORDER BY periodo, tipo
+            """)
+            growth_result = db.execute(growth_query)
+            growth_data = [{"tipo": row[0], "periodo": str(row[1]), "cantidad": row[2]} for row in growth_result]
+            
+            if growth_data:
+                df_growth = pd.DataFrame(growth_data)
+                df_growth['periodo'] = pd.to_datetime(df_growth['periodo'])
+                
+                fig, ax = plt.subplots(figsize=(14, 7))
+                
+                for tipo in df_growth['tipo'].unique():
+                    df_tipo = df_growth[df_growth['tipo'] == tipo]
+                    ax.plot(df_tipo['periodo'], df_tipo['cantidad'], 
+                           marker='o', linewidth=2.5, markersize=8, label=tipo)
+                
+                ax.set_xlabel('Periodo (Semanas)', fontsize=13, fontweight='bold')
+                ax.set_ylabel('Cantidad de Registros', fontsize=13, fontweight='bold')
+                ax.set_title('Crecimiento Comparativo del Sistema (Últimas 12 Semanas)', 
+                            fontsize=15, fontweight='bold', pad=20)
+                ax.legend(loc='best', frameon=True, shadow=True, fontsize=11)
+                ax.grid(True, alpha=0.3, linestyle='--')
+                plt.xticks(rotation=45, ha='right')
+                plt.tight_layout()
+                
+                buffer = BytesIO()
+                fig.savefig(buffer, format='png', dpi=150, bbox_inches='tight')
+                buffer.seek(0)
+                plots['growth_comparison'] = f"data:image/png;base64,{base64.b64encode(buffer.read()).decode()}"
+                plt.close(fig)
+        except Exception as e:
+            logger.warning(f"No se pudo generar gráfica de crecimiento: {e}")
+        
+        # GRÁFICA 8: Top Choferes por Desempeño (Viajes Completados)
+        try:
+            top_drivers_query = text("""
+                SELECT 
+                    CONCAT(c.nombre, ' ', c.apellidos) as chofer,
+                    COUNT(DISTINCT v.id) as total_viajes,
+                    COUNT(DISTINCT CASE WHEN v.estado = 'completado' THEN v.id END) as viajes_completados,
+                    COUNT(DISTINCT cv.id) as total_confirmaciones,
+                    COALESCE(AVG(uc.velocidad) * 3.6, 0) as velocidad_promedio_kmh
+                FROM choferes c
+                LEFT JOIN viajes v ON v.chofer_id = c.id
+                LEFT JOIN confirmaciones_viaje cv ON cv.viaje_id = v.id
+                LEFT JOIN ubicaciones_chofer uc ON uc.chofer_id = c.id AND uc.viaje_id = v.id
+                GROUP BY c.id, c.nombre, c.apellidos
+                HAVING COUNT(DISTINCT v.id) > 0
+                ORDER BY viajes_completados DESC, total_confirmaciones DESC
+                LIMIT 10
+            """)
+            top_drivers_result = db.execute(top_drivers_query)
+            top_drivers_data = [{"chofer": row[0], "total_viajes": row[1], "viajes_completados": row[2], 
+                                "confirmaciones": row[3], "velocidad": row[4]} for row in top_drivers_result]
+            
+            if top_drivers_data:
+                df_top_drivers = pd.DataFrame(top_drivers_data)
+                
+                fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 7))
+                
+                # Subplot 1: Viajes completados
+                colors = plt.cm.viridis(np.linspace(0.3, 0.9, len(df_top_drivers)))
+                ax1.barh(df_top_drivers['chofer'], df_top_drivers['viajes_completados'], color=colors, edgecolor='black')
+                ax1.set_xlabel('Viajes Completados', fontsize=12, fontweight='bold')
+                ax1.set_title('Top Choferes por Viajes Completados', fontsize=14, fontweight='bold')
+                ax1.grid(axis='x', alpha=0.3, linestyle='--')
+                
+                # Subplot 2: Confirmaciones
+                ax2.barh(df_top_drivers['chofer'], df_top_drivers['confirmaciones'], color=colors, edgecolor='black')
+                ax2.set_xlabel('Total Confirmaciones', fontsize=12, fontweight='bold')
+                ax2.set_title('Top Choferes por Confirmaciones', fontsize=14, fontweight='bold')
+                ax2.grid(axis='x', alpha=0.3, linestyle='--')
+                
+                plt.tight_layout()
+                
+                buffer = BytesIO()
+                fig.savefig(buffer, format='png', dpi=150, bbox_inches='tight')
+                buffer.seek(0)
+                plots['top_drivers_performance'] = f"data:image/png;base64,{base64.b64encode(buffer.read()).decode()}"
+                plt.close(fig)
+        except Exception as e:
+            logger.warning(f"No se pudo generar gráfica de top choferes: {e}")
+        
+        # GRÁFICA 9: Análisis de Ocupación de Unidades (Box Plot)
+        try:
+            ocupacion_query = text("""
+                SELECT 
+                    u.placa,
+                    v.cupo_maximo,
+                    v.confirmaciones_actuales,
+                    CASE 
+                        WHEN v.cupo_maximo > 0 THEN (v.confirmaciones_actuales::float / v.cupo_maximo) * 100
+                        ELSE 0
+                    END as porcentaje_ocupacion
+                FROM unidades u
+                LEFT JOIN viajes v ON v.unidad_id = u.id
+                WHERE v.id IS NOT NULL AND v.cupo_maximo > 0
+            """)
+            ocupacion_result = db.execute(ocupacion_query)
+            ocupacion_data = [{"placa": row[0], "cupo_maximo": row[1], "confirmaciones": row[2], 
+                              "ocupacion": row[3]} for row in ocupacion_result]
+            
+            if ocupacion_data:
+                df_ocupacion = pd.DataFrame(ocupacion_data)
+                
+                fig, ax = plt.subplots(figsize=(12, 7))
+                
+                # Crear box plot por unidad
+                placas_unicas = df_ocupacion['placa'].unique()[:15]  # Limitar a 15 unidades
+                data_for_boxplot = [df_ocupacion[df_ocupacion['placa'] == placa]['ocupacion'].values 
+                                   for placa in placas_unicas]
+                
+                bp = ax.boxplot(data_for_boxplot, labels=placas_unicas, patch_artist=True,
+                               boxprops=dict(facecolor='#36a2eb', alpha=0.7),
+                               medianprops=dict(color='red', linewidth=2),
+                               whiskerprops=dict(linewidth=1.5),
+                               capprops=dict(linewidth=1.5))
+                
+                ax.set_xlabel('Unidad (Placa)', fontsize=13, fontweight='bold')
+                ax.set_ylabel('Porcentaje de Ocupación (%)', fontsize=13, fontweight='bold')
+                ax.set_title('Análisis de Ocupación de Unidades', fontsize=15, fontweight='bold', pad=20)
+                ax.grid(axis='y', alpha=0.3, linestyle='--')
+                ax.axhline(y=75, color='orange', linestyle='--', linewidth=2, label='Objetivo 75%')
+                ax.legend()
+                plt.xticks(rotation=45, ha='right')
+                plt.tight_layout()
+                
+                buffer = BytesIO()
+                fig.savefig(buffer, format='png', dpi=150, bbox_inches='tight')
+                buffer.seek(0)
+                plots['units_occupancy_analysis'] = f"data:image/png;base64,{base64.b64encode(buffer.read()).decode()}"
+                plt.close(fig)
+        except Exception as e:
+            logger.warning(f"No se pudo generar análisis de ocupación: {e}")
+        
+        # GRÁFICA 10: Clustering de Escuelas (K-Means por características)
+        try:
+            escuelas_clustering_query = text("""
+                SELECT 
+                    e.nombre,
+                    e.nivel,
+                    COUNT(DISTINCT h.id) as total_estudiantes,
+                    COUNT(DISTINCT u.id) as total_usuarios,
+                    COUNT(DISTINCT pr.id) as total_paradas
+                FROM escuelas e
+                LEFT JOIN hijos h ON h.escuela_id = e.id
+                LEFT JOIN usuarios u ON u.id = h.usuario_id
+                LEFT JOIN paradas_ruta pr ON pr.escuela_id = e.id
+                GROUP BY e.id, e.nombre, e.nivel
+                HAVING COUNT(DISTINCT h.id) > 0
+            """)
+            esc_cluster_result = db.execute(escuelas_clustering_query)
+            esc_cluster_data = [{"nombre": row[0], "nivel": row[1], "estudiantes": row[2], 
+                                "usuarios": row[3], "paradas": row[4]} for row in esc_cluster_result]
+            
+            if len(esc_cluster_data) >= 3:  # K-means requiere al menos 3 muestras
+                df_esc = pd.DataFrame(esc_cluster_data)
+                
+                # Features para clustering
+                features_esc = df_esc[['estudiantes', 'usuarios', 'paradas']].fillna(0)
+                scaler_esc = StandardScaler()
+                features_scaled = scaler_esc.fit_transform(features_esc)
+                
+                # K-means con 3 clusters
+                n_clusters_esc = min(3, len(df_esc) - 1)
+                kmeans_esc = KMeans(n_clusters=n_clusters_esc, random_state=42, n_init=10)
+                df_esc['cluster'] = kmeans_esc.fit_predict(features_scaled)
+                
+                # Visualización
+                fig, ax = plt.subplots(figsize=(12, 8))
+                
+                scatter = ax.scatter(df_esc['estudiantes'], df_esc['usuarios'], 
+                                    c=df_esc['cluster'], s=df_esc['paradas']*50 + 100,
+                                    cmap='viridis', alpha=0.6, edgecolors='black', linewidth=1.5)
+                
+                # Añadir nombres de escuelas
+                for idx, row in df_esc.iterrows():
+                    ax.annotate(row['nombre'][:15], (row['estudiantes'], row['usuarios']),
+                               fontsize=8, alpha=0.7, ha='center')
+                
+                ax.set_xlabel('Total de Estudiantes', fontsize=13, fontweight='bold')
+                ax.set_ylabel('Total de Usuarios', fontsize=13, fontweight='bold')
+                ax.set_title('Clustering de Escuelas por Características\n(Tamaño = Número de Paradas)', 
+                            fontsize=15, fontweight='bold', pad=20)
+                plt.colorbar(scatter, ax=ax, label='Cluster')
+                ax.grid(True, alpha=0.3, linestyle='--')
+                plt.tight_layout()
+                
+                buffer = BytesIO()
+                fig.savefig(buffer, format='png', dpi=150, bbox_inches='tight')
+                buffer.seek(0)
+                plots['schools_clustering'] = f"data:image/png;base64,{base64.b64encode(buffer.read()).decode()}"
+                plt.close(fig)
+        except Exception as e:
+            logger.warning(f"No se pudo generar clustering de escuelas: {e}")
         
         return {
             "status": "success",
