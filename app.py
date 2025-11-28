@@ -122,43 +122,55 @@ class DriverBehaviorAnalysis:
     def generate_sample_data(self, n_samples=1000):
         """
         Genera datos simulados si no hay datos reales disponibles.
+        Ahora incluye las métricas correctas para el clustering.
         """
         np.random.seed(42)
         
-        normal = n_samples // 3
-        stressed = n_samples // 3
-        risk = n_samples - (normal + stressed)
+        excelente = n_samples // 3
+        promedio = n_samples // 3
+        atencion = n_samples - (excelente + promedio)
         
-        # Conductor normal
-        heart_rate_normal = np.random.normal(70, 5, normal)
-        accel_x_normal = np.random.normal(0.2, 0.3, normal)
-        accel_y_normal = np.random.normal(0.3, 0.3, normal)
-        accel_z_normal = np.random.normal(9.8, 0.2, normal)
+        # Grupo Excelente: alta asistencia, buena eficiencia, tiempo rápido
+        tasa_asistencia_exc = np.random.normal(95, 3, excelente)
+        eficiencia_exc = np.random.normal(105, 5, excelente)
+        tiempo_recogida_exc = np.random.normal(4, 1, excelente)
+        confirmaciones_exc = np.random.randint(8, 15, excelente)
         
-        # Conductor estresado
-        heart_rate_stressed = np.random.normal(95, 8, stressed)
-        accel_x_stressed = np.random.normal(0.8, 0.5, stressed)
-        accel_y_stressed = np.random.normal(1.0, 0.5, stressed)
-        accel_z_stressed = np.random.normal(9.7, 0.4, stressed)
+        # Grupo Promedio: asistencia media, eficiencia normal
+        tasa_asistencia_prom = np.random.normal(80, 5, promedio)
+        eficiencia_prom = np.random.normal(95, 8, promedio)
+        tiempo_recogida_prom = np.random.normal(8, 2, promedio)
+        confirmaciones_prom = np.random.randint(5, 12, promedio)
         
-        # Conductor en riesgo
-        heart_rate_risk = np.random.normal(125, 10, risk)
-        accel_x_risk = np.random.normal(1.5, 0.8, risk)
-        accel_y_risk = np.random.normal(2.0, 1.0, risk)
-        accel_z_risk = np.random.normal(9.5, 0.6, risk)
+        # Grupo Requiere Atención: baja asistencia, problemas de eficiencia
+        tasa_asistencia_aten = np.random.normal(65, 8, atencion)
+        eficiencia_aten = np.random.normal(75, 10, atencion)
+        tiempo_recogida_aten = np.random.normal(15, 3, atencion)
+        confirmaciones_aten = np.random.randint(3, 10, atencion)
         
-        heart_rate = np.concatenate([heart_rate_normal, heart_rate_stressed, heart_rate_risk])
-        accel_x = np.concatenate([accel_x_normal, accel_x_stressed, accel_x_risk])
-        accel_y = np.concatenate([accel_y_normal, accel_y_stressed, accel_y_risk])
-        accel_z = np.concatenate([accel_z_normal, accel_z_stressed, accel_z_risk])
+        # Combinar todos los datos
+        tasa_asistencia = np.concatenate([tasa_asistencia_exc, tasa_asistencia_prom, tasa_asistencia_aten])
+        eficiencia = np.concatenate([eficiencia_exc, eficiencia_prom, eficiencia_aten])
+        tiempo_recogida = np.concatenate([tiempo_recogida_exc, tiempo_recogida_prom, tiempo_recogida_aten])
+        confirmaciones = np.concatenate([confirmaciones_exc, confirmaciones_prom, confirmaciones_aten])
         
-        accel_magnitude = np.sqrt(accel_x**2 + accel_y**2 + accel_z**2)
+        # Clip valores para que sean realistas
+        tasa_asistencia = np.clip(tasa_asistencia, 0, 100)
+        eficiencia = np.clip(eficiencia, 50, 150)
+        tiempo_recogida = np.clip(tiempo_recogida, 1, 30)
         
         self.df = pd.DataFrame({
-            'heart_rate': heart_rate,
-            'accel_magnitude': accel_magnitude,
-            'timestamp': pd.date_range('2025-01-01', periods=n_samples, freq='30s')
+            'viaje_id': range(1, n_samples + 1),
+            'chofer_id': 1,
+            'tasa_asistencia': tasa_asistencia,
+            'eficiencia': eficiencia,
+            'tiempo_promedio_recogida': tiempo_recogida,
+            'total_confirmaciones': confirmaciones,
+            'duracion_real': np.random.uniform(20, 60, n_samples),
+            'duracion_estimada': np.random.uniform(20, 60, n_samples)
         })
+        
+        logger.info(f"Generados {n_samples} registros simulados con métricas de clustering")
         return self.df
 
     def fetch_data_from_db(self, db: Session, driver_id: int = None):
@@ -189,7 +201,7 @@ class DriverBehaviorAnalysis:
                         COUNT(DISTINCT a.id) as total_asistencias,
                         COALESCE(AVG(EXTRACT(EPOCH FROM (a.hora_registro - cv.created_at))/60), 0) as tiempo_promedio_recogida
                     FROM viajes v
-                    LEFT JOIN confirmacion_viaje cv ON cv.viaje_id = v.id
+                    LEFT JOIN confirmaciones_viaje cv ON cv.viaje_id = v.id
                     LEFT JOIN asistencias a ON a.viaje_id = v.id
                     WHERE v.chofer_id = :driver_id
                     GROUP BY v.id, v.chofer_id, v.fecha_inicio, v.fecha_fin, v.estado, v.duracion_estimada
@@ -214,7 +226,7 @@ class DriverBehaviorAnalysis:
                         COALESCE(AVG(EXTRACT(EPOCH FROM (a.hora_registro - cv.created_at))/60), 0) as tiempo_promedio_recogida
                     FROM viajes v
                     LEFT JOIN choferes c ON c.id = v.chofer_id
-                    LEFT JOIN confirmacion_viaje cv ON cv.viaje_id = v.id
+                    LEFT JOIN confirmaciones_viaje cv ON cv.viaje_id = v.id
                     LEFT JOIN asistencias a ON a.viaje_id = v.id
                     WHERE v.fecha_inicio >= NOW() - INTERVAL '6 months'
                     GROUP BY v.id, v.chofer_id, c.nombre, c.apellidos, v.fecha_inicio, v.fecha_fin, v.estado, v.duracion_estimada
@@ -338,7 +350,17 @@ class DriverBehaviorAnalysis:
         feature_cols = ['tasa_asistencia', 'eficiencia', 'tiempo_promedio_recogida']
         available_features = [col for col in feature_cols if col in self.df.columns]
         
+        if len(available_features) == 0:
+            logger.error("No hay features disponibles para clustering")
+            raise ValueError("No hay columnas válidas para realizar clustering")
+        
         features = self.df[available_features].fillna(0)
+        
+        # Verificar que hay datos
+        if features.empty or len(features) == 0:
+            logger.error("DataFrame de features está vacío")
+            raise ValueError("No hay datos para realizar clustering")
+        
         scaled_features = self.scaler.fit_transform(features)
         
         self.kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
