@@ -2,8 +2,15 @@ import os
 import logging
 import pandas as pd
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')  # Backend sin GUI para servidor
+import matplotlib.pyplot as plt
+import seaborn as sns
+from io import BytesIO
+import base64
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, Session
 from sklearn.cluster import KMeans
@@ -11,6 +18,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import silhouette_score
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
+from datetime import datetime, timedelta
 
 # Configuración de logging
 logging.basicConfig(level=logging.INFO)
@@ -153,96 +161,364 @@ class DriverBehaviorAnalysis:
         })
         return self.df
 
-    def fetch_data_from_db(self, db: Session, driver_id: int):
+    def fetch_data_from_db(self, db: Session, driver_id: int = None):
         """
-        Intenta obtener datos reales de la base de datos.
-        Por ahora, como no tenemos tabla de sensores, usaremos UbicacionChofer para simular
-        o retornaremos False para usar datos simulados.
+        Obtiene datos reales de la base de datos para análisis K-means.
+        Usa datos de viajes, confirmaciones, asistencias y ubicaciones GPS.
         """
-        # Aquí iría la consulta real si tuviéramos los datos
-        # query = text("SELECT * FROM sensor_data WHERE driver_id = :driver_id")
-        # result = db.execute(query, {"driver_id": driver_id})
-        # ...
-        
-        # Verificamos si el chofer existe al menos
         try:
-            query = text("SELECT id, nombre, apellidos FROM choferes WHERE id = :driver_id")
-            result = db.execute(query, {"driver_id": driver_id}).fetchone()
-            if not result:
-                return False # Chofer no encontrado
+            # Si se especifica driver_id, filtrar por ese chofer
+            if driver_id:
+                # Verificar que el chofer existe
+                query = text("SELECT id, nombre, apellidos FROM choferes WHERE id = :driver_id")
+                result = db.execute(query, {"driver_id": driver_id}).fetchone()
+                if not result:
+                    logger.warning(f"Chofer {driver_id} no encontrado")
+                    return False
+                
+                # Obtener datos de viajes del chofer
+                query = text("""
+                    SELECT 
+                        v.id as viaje_id,
+                        v.chofer_id,
+                        v.fecha_inicio,
+                        v.fecha_fin,
+                        v.estado,
+                        v.duracion_estimada,
+                        COUNT(DISTINCT cv.id) as total_confirmaciones,
+                        COUNT(DISTINCT a.id) as total_asistencias,
+                        COALESCE(AVG(EXTRACT(EPOCH FROM (a.hora_registro - cv.created_at))/60), 0) as tiempo_promedio_recogida
+                    FROM viajes v
+                    LEFT JOIN confirmacion_viaje cv ON cv.viaje_id = v.id
+                    LEFT JOIN asistencias a ON a.viaje_id = v.id
+                    WHERE v.chofer_id = :driver_id
+                    GROUP BY v.id, v.chofer_id, v.fecha_inicio, v.fecha_fin, v.estado, v.duracion_estimada
+                    ORDER BY v.fecha_inicio DESC
+                    LIMIT 100
+                """)
+                result = db.execute(query, {"driver_id": driver_id})
+            else:
+                # Análisis global de todos los choferes
+                query = text("""
+                    SELECT 
+                        v.id as viaje_id,
+                        v.chofer_id,
+                        c.nombre as chofer_nombre,
+                        c.apellidos as chofer_apellidos,
+                        v.fecha_inicio,
+                        v.fecha_fin,
+                        v.estado,
+                        v.duracion_estimada,
+                        COUNT(DISTINCT cv.id) as total_confirmaciones,
+                        COUNT(DISTINCT a.id) as total_asistencias,
+                        COALESCE(AVG(EXTRACT(EPOCH FROM (a.hora_registro - cv.created_at))/60), 0) as tiempo_promedio_recogida
+                    FROM viajes v
+                    LEFT JOIN choferes c ON c.id = v.chofer_id
+                    LEFT JOIN confirmacion_viaje cv ON cv.viaje_id = v.id
+                    LEFT JOIN asistencias a ON a.viaje_id = v.id
+                    WHERE v.fecha_inicio >= NOW() - INTERVAL '6 months'
+                    GROUP BY v.id, v.chofer_id, c.nombre, c.apellidos, v.fecha_inicio, v.fecha_fin, v.estado, v.duracion_estimada
+                    ORDER BY v.fecha_inicio DESC
+                    LIMIT 500
+                """)
+                result = db.execute(query)
             
-            # Si el chofer existe pero no tenemos datos de sensores, usamos simulados
-            # O podríamos intentar usar 'velocidad' de UbicacionChofer como proxy
-            return False 
+            rows = result.fetchall()
+            
+            if not rows or len(rows) == 0:
+                logger.warning("No se encontraron datos de viajes")
+                return False
+            
+            # Convertir a DataFrame
+            data = []
+            for row in rows:
+                data.append({
+                    'viaje_id': row.viaje_id,
+                    'chofer_id': row.chofer_id,
+                    'chofer_nombre': getattr(row, 'chofer_nombre', 'N/A'),
+                    'chofer_apellidos': getattr(row, 'chofer_apellidos', 'N/A'),
+                    'fecha_inicio': row.fecha_inicio,
+                    'fecha_fin': row.fecha_fin,
+                    'estado': row.estado,
+                    'duracion_estimada': row.duracion_estimada or 0,
+                    'total_confirmaciones': row.total_confirmaciones or 0,
+                    'total_asistencias': row.total_asistencias or 0,
+                    'tiempo_promedio_recogida': float(row.tiempo_promedio_recogida or 0)
+                })
+            
+            self.df = pd.DataFrame(data)
+            
+            # Calcular métricas adicionales
+            self.df['tasa_asistencia'] = np.where(
+                self.df['total_confirmaciones'] > 0,
+                (self.df['total_asistencias'] / self.df['total_confirmaciones'] * 100),
+                0
+            )
+            
+            # Duración real del viaje (si tiene fecha_fin)
+            self.df['duracion_real'] = self.df.apply(
+                lambda x: (x['fecha_fin'] - x['fecha_inicio']).total_seconds() / 60 
+                if pd.notnull(x['fecha_fin']) and pd.notnull(x['fecha_inicio']) 
+                else x['duracion_estimada'], 
+                axis=1
+            )
+            
+            # Eficiencia (duración real vs estimada)
+            self.df['eficiencia'] = np.where(
+                self.df['duracion_estimada'] > 0,
+                (self.df['duracion_estimada'] / self.df['duracion_real'] * 100).clip(0, 200),
+                100
+            )
+            
+            logger.info(f"Se cargaron {len(self.df)} registros de viajes para análisis")
+            return True
+            
         except Exception as e:
             logger.error(f"Error fetching data from DB: {e}")
             return False
 
-    def find_optimal_clusters(self, max_clusters=10):
-        features = self.df[['heart_rate', 'accel_magnitude']]
+    def find_optimal_clusters(self, max_clusters=6):
+        """
+        Encuentra el número óptimo de clusters usando el método del codo y silhouette score.
+        Usa métricas reales de los choferes: tasa de asistencia, eficiencia, tiempo de recogida.
+        """
+        # Seleccionar features relevantes
+        feature_cols = ['tasa_asistencia', 'eficiencia', 'tiempo_promedio_recogida', 'total_confirmaciones']
+        
+        # Verificar que existen las columnas
+        available_features = [col for col in feature_cols if col in self.df.columns]
+        
+        if len(available_features) < 2:
+            logger.warning("No hay suficientes features para clustering, usando valores por defecto")
+            return 3
+        
+        features = self.df[available_features].fillna(0)
+        
+        # Si hay muy pocos datos, limitar clusters
+        n_samples = len(features)
+        max_clusters = min(max_clusters, n_samples // 2)
+        
+        if max_clusters < 2:
+            return 2
+        
         scaled_features = self.scaler.fit_transform(features)
         
+        inertias = []
         silhouette_scores = []
         K_range = range(2, max_clusters + 1)
         
         for k in K_range:
             kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
             kmeans.fit(scaled_features)
-            silhouette_scores.append(silhouette_score(scaled_features, kmeans.labels_))
+            inertias.append(kmeans.inertia_)
             
-        optimal_k = K_range[np.argmax(silhouette_scores)]
+            if n_samples > k:  # Silhouette score requiere más muestras que clusters
+                silhouette_scores.append(silhouette_score(scaled_features, kmeans.labels_))
+            else:
+                silhouette_scores.append(0)
+        
+        # Elegir el k con mejor silhouette score (balance entre separación y cohesión)
+        optimal_k = K_range[np.argmax(silhouette_scores)] if silhouette_scores else 3
+        
+        # Guardar métricas para gráficas
+        self.elbow_data = {
+            'k_values': list(K_range),
+            'inertias': inertias,
+            'silhouette_scores': silhouette_scores
+        }
+        
         return optimal_k
 
     def perform_clustering(self, n_clusters=3):
-        features = self.df[['heart_rate', 'accel_magnitude']]
+        """
+        Realiza clustering K-means sobre datos reales de choferes.
+        Features: tasa_asistencia, eficiencia, tiempo_promedio_recogida
+        """
+        # Seleccionar features para clustering
+        feature_cols = ['tasa_asistencia', 'eficiencia', 'tiempo_promedio_recogida']
+        available_features = [col for col in feature_cols if col in self.df.columns]
+        
+        features = self.df[available_features].fillna(0)
         scaled_features = self.scaler.fit_transform(features)
         
         self.kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
         self.df['cluster'] = self.kmeans.fit_predict(scaled_features)
         
-        # Etiquetas
-        cluster_means = self.df.groupby('cluster')['heart_rate'].mean()
-        sorted_clusters = cluster_means.sort_values().index.tolist()
+        # Etiquetar clusters basándose en tasa de asistencia (métrica principal)
+        if 'tasa_asistencia' in self.df.columns:
+            cluster_means = self.df.groupby('cluster')['tasa_asistencia'].mean()
+        elif 'eficiencia' in self.df.columns:
+            cluster_means = self.df.groupby('cluster')['eficiencia'].mean()
+        else:
+            cluster_means = self.df.groupby('cluster').size()
         
+        sorted_clusters = cluster_means.sort_values(ascending=False).index.tolist()
+        
+        # Asignar etiquetas descriptivas
         cluster_labels = {}
         if n_clusters >= 3:
-            cluster_labels[sorted_clusters[0]] = 'Normal'
-            cluster_labels[sorted_clusters[1]] = 'Precaución'
-            cluster_labels[sorted_clusters[2]] = 'Riesgo Alto'
+            cluster_labels[sorted_clusters[0]] = 'Excelente Desempeño'
+            cluster_labels[sorted_clusters[1]] = 'Desempeño Promedio'
+            cluster_labels[sorted_clusters[2]] = 'Requiere Atención'
             for i in range(3, n_clusters):
-                cluster_labels[sorted_clusters[i]] = f'Cluster {i+1}'
-        else:
-            for i in range(n_clusters):
                 cluster_labels[sorted_clusters[i]] = f'Grupo {i+1}'
+        else:
+            cluster_labels[sorted_clusters[0]] = 'Alto Desempeño'
+            cluster_labels[sorted_clusters[-1]] = 'Bajo Desempeño'
                 
         self.df['status'] = self.df['cluster'].map(cluster_labels)
         
-        # Estadísticas
+        # Calcular estadísticas por cluster
         stats = {}
         for cluster in sorted(self.df['cluster'].unique()):
             cluster_data = self.df[self.df['cluster'] == cluster]
+            
             stats[str(cluster)] = {
                 "status": cluster_labels.get(cluster, f"Cluster {cluster}"),
                 "count": int(len(cluster_data)),
-                "heart_rate_mean": float(cluster_data['heart_rate'].mean()),
-                "heart_rate_std": float(cluster_data['heart_rate'].std()),
-                "accel_mean": float(cluster_data['accel_magnitude'].mean()),
-                "accel_std": float(cluster_data['accel_magnitude'].std())
+                "tasa_asistencia_mean": float(cluster_data['tasa_asistencia'].mean()) if 'tasa_asistencia' in cluster_data else 0,
+                "tasa_asistencia_std": float(cluster_data['tasa_asistencia'].std()) if 'tasa_asistencia' in cluster_data else 0,
+                "eficiencia_mean": float(cluster_data['eficiencia'].mean()) if 'eficiencia' in cluster_data else 0,
+                "eficiencia_std": float(cluster_data['eficiencia'].std()) if 'eficiencia' in cluster_data else 0,
+                "tiempo_recogida_mean": float(cluster_data['tiempo_promedio_recogida'].mean()) if 'tiempo_promedio_recogida' in cluster_data else 0,
+                "tiempo_recogida_std": float(cluster_data['tiempo_promedio_recogida'].std()) if 'tiempo_promedio_recogida' in cluster_data else 0,
+                "total_confirmaciones_mean": float(cluster_data['total_confirmaciones'].mean()) if 'total_confirmaciones' in cluster_data else 0
             }
             
         return stats, cluster_labels
 
     def get_visualization_data(self):
         """
-        Prepara datos para visualización en frontend (e.g. Chart.js o ApexCharts)
+        Prepara datos para visualización en frontend
         """
-        # Convertir a lista de diccionarios para JSON
-        # Limitar a 1000 puntos para no saturar el frontend
-        df_sample = self.df.sample(min(len(self.df), 1000))
+        df_sample = self.df.sample(min(len(self.df), 500))
+        
+        # Seleccionar columnas relevantes que existen
+        cols_to_export = ['cluster', 'status']
+        for col in ['tasa_asistencia', 'eficiencia', 'tiempo_promedio_recogida', 'total_confirmaciones', 'chofer_id']:
+            if col in df_sample.columns:
+                cols_to_export.append(col)
+        
         return {
-            "scatter": df_sample[['heart_rate', 'accel_magnitude', 'cluster', 'status']].to_dict(orient='records'),
-            "centroids": self.scaler.inverse_transform(self.kmeans.cluster_centers_).tolist()
+            "scatter": df_sample[cols_to_export].to_dict(orient='records'),
+            "centroids": self.scaler.inverse_transform(self.kmeans.cluster_centers_).tolist() if self.kmeans else []
         }
+    
+    def generate_plots(self):
+        """
+        Genera gráficas matplotlib y las devuelve como imágenes base64
+        """
+        plots = {}
+        
+        # Configuración de estilo
+        sns.set_style("whitegrid")
+        plt.rcParams['figure.figsize'] = (10, 6)
+        
+        try:
+            # 1. Gráfica de dispersión: Tasa de Asistencia vs Eficiencia
+            if 'tasa_asistencia' in self.df.columns and 'eficiencia' in self.df.columns:
+                fig, ax = plt.subplots(figsize=(10, 6))
+                
+                for cluster in sorted(self.df['cluster'].unique()):
+                    cluster_data = self.df[self.df['cluster'] == cluster]
+                    ax.scatter(
+                        cluster_data['tasa_asistencia'], 
+                        cluster_data['eficiencia'],
+                        label=cluster_data['status'].iloc[0] if len(cluster_data) > 0 else f'Cluster {cluster}',
+                        alpha=0.6,
+                        s=100
+                    )
+                
+                ax.set_xlabel('Tasa de Asistencia (%)', fontsize=12)
+                ax.set_ylabel('Eficiencia (%)', fontsize=12)
+                ax.set_title('Clustering de Choferes: Asistencia vs Eficiencia', fontsize=14, fontweight='bold')
+                ax.legend()
+                ax.grid(True, alpha=0.3)
+                
+                plots['scatter_asistencia_eficiencia'] = self._fig_to_base64(fig)
+                plt.close(fig)
+            
+            # 2. Método del Codo (Elbow Method)
+            if hasattr(self, 'elbow_data') and self.elbow_data:
+                fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+                
+                # Inertia
+                ax1.plot(self.elbow_data['k_values'], self.elbow_data['inertias'], 'bo-', linewidth=2, markersize=8)
+                ax1.set_xlabel('Número de Clusters (K)', fontsize=12)
+                ax1.set_ylabel('Inercia (Within-Cluster Sum of Squares)', fontsize=12)
+                ax1.set_title('Método del Codo', fontsize=14, fontweight='bold')
+                ax1.grid(True, alpha=0.3)
+                
+                # Silhouette Score
+                ax2.plot(self.elbow_data['k_values'], self.elbow_data['silhouette_scores'], 'ro-', linewidth=2, markersize=8)
+                ax2.set_xlabel('Número de Clusters (K)', fontsize=12)
+                ax2.set_ylabel('Silhouette Score', fontsize=12)
+                ax2.set_title('Silhouette Score por K', fontsize=14, fontweight='bold')
+                ax2.grid(True, alpha=0.3)
+                
+                plt.tight_layout()
+                plots['elbow_method'] = self._fig_to_base64(fig)
+                plt.close(fig)
+            
+            # 3. Distribución de clusters (Bar Chart)
+            fig, ax = plt.subplots(figsize=(10, 6))
+            cluster_counts = self.df.groupby('status').size().sort_values(ascending=False)
+            
+            colors = ['#2ecc71', '#f39c12', '#e74c3c', '#3498db', '#9b59b6']
+            cluster_counts.plot(kind='bar', ax=ax, color=colors[:len(cluster_counts)])
+            
+            ax.set_xlabel('Categoría de Desempeño', fontsize=12)
+            ax.set_ylabel('Número de Viajes', fontsize=12)
+            ax.set_title('Distribución de Viajes por Categoría de Desempeño', fontsize=14, fontweight='bold')
+            ax.tick_params(axis='x', rotation=45)
+            ax.grid(True, alpha=0.3, axis='y')
+            
+            plt.tight_layout()
+            plots['cluster_distribution'] = self._fig_to_base64(fig)
+            plt.close(fig)
+            
+            # 4. Box plot de métricas por cluster
+            if 'tasa_asistencia' in self.df.columns:
+                fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+                
+                # Tasa de Asistencia
+                self.df.boxplot(column='tasa_asistencia', by='status', ax=axes[0])
+                axes[0].set_title('Tasa de Asistencia por Cluster')
+                axes[0].set_xlabel('')
+                axes[0].set_ylabel('Tasa de Asistencia (%)')
+                
+                # Eficiencia
+                if 'eficiencia' in self.df.columns:
+                    self.df.boxplot(column='eficiencia', by='status', ax=axes[1])
+                    axes[1].set_title('Eficiencia por Cluster')
+                    axes[1].set_xlabel('')
+                    axes[1].set_ylabel('Eficiencia (%)')
+                
+                # Tiempo de Recogida
+                if 'tiempo_promedio_recogida' in self.df.columns:
+                    self.df.boxplot(column='tiempo_promedio_recogida', by='status', ax=axes[2])
+                    axes[2].set_title('Tiempo Promedio de Recogida por Cluster')
+                    axes[2].set_xlabel('')
+                    axes[2].set_ylabel('Tiempo (minutos)')
+                
+                plt.suptitle('Análisis de Métricas por Cluster', fontsize=14, fontweight='bold', y=1.02)
+                plt.tight_layout()
+                plots['boxplot_metrics'] = self._fig_to_base64(fig)
+                plt.close(fig)
+            
+        except Exception as e:
+            logger.error(f"Error generando gráficas: {e}")
+        
+        return plots
+    
+    def _fig_to_base64(self, fig):
+        """Convierte una figura matplotlib a string base64"""
+        buffer = BytesIO()
+        fig.savefig(buffer, format='png', dpi=100, bbox_inches='tight')
+        buffer.seek(0)
+        image_base64 = base64.b64encode(buffer.read()).decode('utf-8')
+        buffer.close()
+        return f"data:image/png;base64,{image_base64}"
 
 # Endpoints
 @app.get("/")
@@ -287,50 +563,72 @@ def test_analyze():
         "example_curl": "curl -X POST https://kmeans-flask-production.up.railway.app/api/analyze/driver -H 'Content-Type: application/json' -d '{\"driver_id\":1,\"n_samples\":100}'"
     }
 
-@app.post("/api/analyze/driver", response_model=AnalysisResponse)
+@app.post("/api/analyze/driver")
 def analyze_driver(request: AnalysisRequest, db: Session = Depends(get_db)):
+    """
+    Endpoint principal para análisis K-means de choferes.
+    Retorna estadísticas de clusters y gráficas matplotlib en base64.
+    """
     analyzer = DriverBehaviorAnalysis()
     
-    # Intentar obtener datos reales
+    # Intentar obtener datos reales de la BD
     has_real_data = False
-    if request.driver_id and db is not None:
+    if db is not None:
         try:
             has_real_data = analyzer.fetch_data_from_db(db, request.driver_id)
         except Exception as e:
-            logger.error(f"Error al intentar obtener datos reales: {e}")
+            logger.error(f"Error al obtener datos reales: {e}")
             has_real_data = False
     
     # Si no hay datos reales, generar simulados
     if not has_real_data:
-        logger.info(f"Usando datos simulados para driver_id={request.driver_id}")
+        logger.info(f"Usando datos simulados (no se encontraron datos reales)")
         analyzer.generate_sample_data(n_samples=request.n_samples)
     
-    # Análisis
+    # Realizar análisis K-means
     try:
         optimal_k = analyzer.find_optimal_clusters(max_clusters=5)
         stats, labels = analyzer.perform_clustering(n_clusters=optimal_k)
         viz_data = analyzer.get_visualization_data()
         
-        # Recomendaciones
+        # Generar gráficas matplotlib
+        plots = analyzer.generate_plots()
+        
+        # Generar recomendaciones basadas en los clusters
         recommendations = []
         for cluster_id, data in stats.items():
             status = data['status']
-            if status == 'Normal':
-                recommendations.append(f"Grupo {status}: Continuar monitoreo regular.")
-            elif status == 'Precaución':
-                recommendations.append(f"Grupo {status}: Sugerir descansos más frecuentes.")
-            elif status == 'Riesgo Alto':
-                recommendations.append(f"Grupo {status}: ALERTA - Revisar comportamiento inmediatamente.")
-                
-        return AnalysisResponse(
-            driver_id=request.driver_id,
-            optimal_k=optimal_k,
-            clusters=stats,
-            recommendations=recommendations,
-            visualization_data=viz_data
-        )
+            count = data['count']
+            
+            if 'Excelente' in status or 'Alto' in status:
+                recommendations.append(f"✅ {status}: {count} viajes - Mantener este nivel de desempeño.")
+            elif 'Promedio' in status:
+                recommendations.append(f"⚠️ {status}: {count} viajes - Oportunidades de mejora en puntualidad y asistencia.")
+            elif 'Atención' in status or 'Bajo' in status:
+                recommendations.append(f"🔴 {status}: {count} viajes - Requiere capacitación y seguimiento inmediato.")
+            else:
+                recommendations.append(f"📊 {status}: {count} viajes registrados.")
+        
+        # Agregar recomendación general
+        if has_real_data:
+            total_viajes = len(analyzer.df)
+            recommendations.append(f"\n📈 Análisis basado en {total_viajes} viajes reales de la base de datos.")
+        else:
+            recommendations.append(f"\n⚠️ Análisis basado en datos simulados. Conecte a la base de datos para análisis real.")
+        
+        return JSONResponse(content={
+            "driver_id": request.driver_id,
+            "optimal_k": optimal_k,
+            "clusters": stats,
+            "recommendations": recommendations,
+            "visualization_data": viz_data,
+            "plots": plots,
+            "data_source": "real" if has_real_data else "simulated",
+            "total_records": len(analyzer.df)
+        })
+        
     except Exception as e:
-        logger.error(f"Error durante el análisis: {e}")
+        logger.error(f"Error durante el análisis: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error interno en el análisis: {str(e)}")
 
 @app.get("/api/drivers")
