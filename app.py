@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from io import BytesIO
 import base64
+import traceback
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -852,6 +853,277 @@ def get_drivers(db: Session = Depends(get_db)):
         # En caso de error de BD, devolver lista vacía o simulada para no romper el frontend con 500
         logger.warning("Devolviendo lista vacía debido a error de BD.")
         return []
+
+
+@app.get("/api/analyze/system-stats")
+async def analyze_system_stats(db: Session = Depends(get_db)):
+    """
+    Analiza estadísticas generales del sistema y genera visualizaciones matplotlib
+    Incluye: usuarios, estudiantes, choferes, unidades, escuelas, actividad temporal
+    """
+    if db is None:
+        logger.warning("Base de datos no disponible para análisis del sistema.")
+        return {
+            "status": "error",
+            "message": "Base de datos no configurada. Verifique las variables de entorno."
+        }
+    
+    try:
+        plots = {}
+        stats = {}
+        
+        # 1. Obtener totales por entidad
+        entities_query = text("""
+            SELECT 
+                'Usuarios' as categoria, COUNT(*) as total FROM usuarios
+            UNION ALL
+            SELECT 'Estudiantes' as categoria, COUNT(*) as total FROM hijos
+            UNION ALL
+            SELECT 'Choferes' as categoria, COUNT(*) as total FROM choferes
+            UNION ALL
+            SELECT 'Unidades' as categoria, COUNT(*) as total FROM unidades
+            UNION ALL
+            SELECT 'Escuelas' as categoria, COUNT(*) as total FROM escuelas
+            UNION ALL
+            SELECT 'Viajes' as categoria, COUNT(*) as total FROM viajes
+        """)
+        entities_result = db.execute(entities_query)
+        entities_data = [{"categoria": row[0], "total": row[1]} for row in entities_result]
+        df_entities = pd.DataFrame(entities_data)
+        stats['entities'] = entities_data
+        
+        # 2. Obtener escuelas por nivel
+        schools_query = text("""
+            SELECT nivel, COUNT(*) as cantidad 
+            FROM escuelas 
+            GROUP BY nivel
+            ORDER BY cantidad DESC
+        """)
+        schools_result = db.execute(schools_query)
+        schools_data = [{"nivel": row[0] or "Sin Nivel", "cantidad": row[1]} for row in schools_result]
+        df_schools = pd.DataFrame(schools_data)
+        stats['schools_by_level'] = schools_data
+        
+        # 3. Obtener registros por día (últimos 30 días)
+        registros_query = text("""
+            SELECT 
+                DATE(fecha_registro) as fecha,
+                COUNT(*) as registros
+            FROM usuarios
+            WHERE fecha_registro >= CURRENT_DATE - INTERVAL '30 days'
+            GROUP BY DATE(fecha_registro)
+            ORDER BY fecha
+        """)
+        registros_result = db.execute(registros_query)
+        registros_data = [{"fecha": str(row[0]), "registros": row[1]} for row in registros_result]
+        df_registros = pd.DataFrame(registros_data) if registros_data else pd.DataFrame(columns=['fecha', 'registros'])
+        stats['daily_registrations'] = registros_data
+        
+        # 4. Obtener actividad por entidad (viajes, confirmaciones, asistencias)
+        actividad_query = text("""
+            SELECT 
+                'Viajes' as tipo, DATE(created_at) as fecha, COUNT(*) as cantidad
+            FROM viajes
+            WHERE created_at >= CURRENT_DATE - INTERVAL '30 days'
+            GROUP BY DATE(created_at)
+            
+            UNION ALL
+            
+            SELECT 
+                'Confirmaciones' as tipo, DATE(created_at) as fecha, COUNT(*) as cantidad
+            FROM confirmaciones_viaje
+            WHERE created_at >= CURRENT_DATE - INTERVAL '30 days'
+            GROUP BY DATE(created_at)
+            
+            UNION ALL
+            
+            SELECT 
+                'Asistencias' as tipo, DATE(created_at) as fecha, COUNT(*) as cantidad
+            FROM asistencias
+            WHERE created_at >= CURRENT_DATE - INTERVAL '30 days'
+            GROUP BY DATE(created_at)
+            
+            ORDER BY fecha, tipo
+        """)
+        actividad_result = db.execute(actividad_query)
+        actividad_data = [{"tipo": row[0], "fecha": str(row[1]), "cantidad": row[2]} for row in actividad_result]
+        stats['activity_timeline'] = actividad_data
+        
+        # 5. Estado de viajes
+        viajes_estado_query = text("""
+            SELECT estado, COUNT(*) as cantidad
+            FROM viajes
+            GROUP BY estado
+        """)
+        viajes_estado_result = db.execute(viajes_estado_query)
+        viajes_estado_data = [{"estado": row[0], "cantidad": row[1]} for row in viajes_estado_result]
+        df_viajes_estado = pd.DataFrame(viajes_estado_data) if viajes_estado_data else pd.DataFrame(columns=['estado', 'cantidad'])
+        stats['trips_by_status'] = viajes_estado_data
+        
+        # ===== GENERAR GRÁFICAS MATPLOTLIB =====
+        sns.set_style("whitegrid")
+        
+        # GRÁFICA 1: Bar Chart - Totales por Entidad
+        if not df_entities.empty:
+            fig, ax = plt.subplots(figsize=(12, 7))
+            colors = ['#007bff', '#28a745', '#ffc107', '#17a2b8', '#6c757d', '#6f42c1']
+            bars = ax.bar(df_entities['categoria'], df_entities['total'], color=colors, edgecolor='black', linewidth=1.2)
+            
+            # Agregar valores encima de las barras
+            for bar in bars:
+                height = bar.get_height()
+                ax.text(bar.get_x() + bar.get_width()/2., height,
+                       f'{int(height)}',
+                       ha='center', va='bottom', fontweight='bold', fontsize=11)
+            
+            ax.set_xlabel('Categoría', fontsize=13, fontweight='bold')
+            ax.set_ylabel('Cantidad Total', fontsize=13, fontweight='bold')
+            ax.set_title('Resumen General del Sistema TrailynSafe', fontsize=15, fontweight='bold', pad=20)
+            ax.grid(axis='y', alpha=0.3, linestyle='--')
+            plt.xticks(rotation=0, ha='center')
+            plt.tight_layout()
+            
+            # Convertir a base64
+            buffer = BytesIO()
+            fig.savefig(buffer, format='png', dpi=150, bbox_inches='tight')
+            buffer.seek(0)
+            plots['entities_overview'] = f"data:image/png;base64,{base64.b64encode(buffer.read()).decode()}"
+            plt.close(fig)
+        
+        # GRÁFICA 2: Pie Chart - Escuelas por Nivel
+        if not df_schools.empty:
+            fig, ax = plt.subplots(figsize=(10, 8))
+            colors_pie = ['#ff6384', '#36a2eb', '#ffce56', '#4bc0c0', '#9966ff', '#ff9f40']
+            wedges, texts, autotexts = ax.pie(
+                df_schools['cantidad'], 
+                labels=df_schools['nivel'],
+                autopct='%1.1f%%',
+                startangle=90,
+                colors=colors_pie,
+                explode=[0.05] * len(df_schools),
+                shadow=True,
+                textprops={'fontsize': 12, 'fontweight': 'bold'}
+            )
+            
+            # Mejorar legibilidad
+            for autotext in autotexts:
+                autotext.set_color('white')
+                autotext.set_fontweight('bold')
+            
+            ax.set_title('Distribución de Escuelas por Nivel Educativo', fontsize=15, fontweight='bold', pad=20)
+            plt.tight_layout()
+            
+            buffer = BytesIO()
+            fig.savefig(buffer, format='png', dpi=150, bbox_inches='tight')
+            buffer.seek(0)
+            plots['schools_distribution'] = f"data:image/png;base64,{base64.b64encode(buffer.read()).decode()}"
+            plt.close(fig)
+        
+        # GRÁFICA 3: Line Chart - Registros por Día (últimos 30 días)
+        if not df_registros.empty:
+            fig, ax = plt.subplots(figsize=(14, 7))
+            
+            # Convertir fecha a datetime
+            df_registros['fecha'] = pd.to_datetime(df_registros['fecha'])
+            df_registros = df_registros.sort_values('fecha')
+            
+            ax.plot(df_registros['fecha'], df_registros['registros'], 
+                   marker='o', linewidth=2.5, markersize=8, color='#007bff', 
+                   markerfacecolor='#ffffff', markeredgewidth=2, markeredgecolor='#007bff')
+            ax.fill_between(df_registros['fecha'], df_registros['registros'], alpha=0.3, color='#007bff')
+            
+            ax.set_xlabel('Fecha', fontsize=13, fontweight='bold')
+            ax.set_ylabel('Nuevos Registros', fontsize=13, fontweight='bold')
+            ax.set_title('Tendencia de Registros de Usuarios (Últimos 30 Días)', fontsize=15, fontweight='bold', pad=20)
+            ax.grid(True, alpha=0.3, linestyle='--')
+            plt.xticks(rotation=45, ha='right')
+            plt.tight_layout()
+            
+            buffer = BytesIO()
+            fig.savefig(buffer, format='png', dpi=150, bbox_inches='tight')
+            buffer.seek(0)
+            plots['registration_trend'] = f"data:image/png;base64,{base64.b64encode(buffer.read()).decode()}"
+            plt.close(fig)
+        
+        # GRÁFICA 4: Heatmap de Actividad (Viajes, Confirmaciones, Asistencias)
+        if actividad_data:
+            df_actividad = pd.DataFrame(actividad_data)
+            df_actividad['fecha'] = pd.to_datetime(df_actividad['fecha'])
+            
+            # Pivot para heatmap
+            df_pivot = df_actividad.pivot_table(
+                values='cantidad', 
+                index='tipo', 
+                columns='fecha', 
+                fill_value=0
+            )
+            
+            if not df_pivot.empty:
+                fig, ax = plt.subplots(figsize=(16, 6))
+                sns.heatmap(df_pivot, annot=True, fmt='g', cmap='YlGnBu', 
+                           linewidths=0.5, linecolor='gray', ax=ax, 
+                           cbar_kws={'label': 'Cantidad'})
+                ax.set_title('Mapa de Calor: Actividad del Sistema (Últimos 30 Días)', 
+                            fontsize=15, fontweight='bold', pad=20)
+                ax.set_xlabel('Fecha', fontsize=13, fontweight='bold')
+                ax.set_ylabel('Tipo de Actividad', fontsize=13, fontweight='bold')
+                plt.xticks(rotation=45, ha='right')
+                plt.tight_layout()
+                
+                buffer = BytesIO()
+                fig.savefig(buffer, format='png', dpi=150, bbox_inches='tight')
+                buffer.seek(0)
+                plots['activity_heatmap'] = f"data:image/png;base64,{base64.b64encode(buffer.read()).decode()}"
+                plt.close(fig)
+        
+        # GRÁFICA 5: Pie Chart - Viajes por Estado
+        if not df_viajes_estado.empty:
+            fig, ax = plt.subplots(figsize=(10, 8))
+            colors_viajes = ['#28a745', '#ffc107', '#17a2b8', '#dc3545', '#6c757d']
+            wedges, texts, autotexts = ax.pie(
+                df_viajes_estado['cantidad'], 
+                labels=df_viajes_estado['estado'],
+                autopct='%1.1f%%',
+                startangle=90,
+                colors=colors_viajes[:len(df_viajes_estado)],
+                explode=[0.05] * len(df_viajes_estado),
+                shadow=True,
+                textprops={'fontsize': 12, 'fontweight': 'bold'}
+            )
+            
+            for autotext in autotexts:
+                autotext.set_color('white')
+                autotext.set_fontweight('bold')
+            
+            ax.set_title('Distribución de Viajes por Estado', fontsize=15, fontweight='bold', pad=20)
+            plt.tight_layout()
+            
+            buffer = BytesIO()
+            fig.savefig(buffer, format='png', dpi=150, bbox_inches='tight')
+            buffer.seek(0)
+            plots['trips_by_status_chart'] = f"data:image/png;base64,{base64.b64encode(buffer.read()).decode()}"
+            plt.close(fig)
+        
+        return {
+            "status": "success",
+            "stats": stats,
+            "plots": plots,
+            "summary": {
+                "total_entities": int(df_entities['total'].sum()) if not df_entities.empty else 0,
+                "total_schools": int(df_schools['cantidad'].sum()) if not df_schools.empty else 0,
+                "recent_registrations": int(df_registros['registros'].sum()) if not df_registros.empty else 0,
+                "visualization_count": len(plots)
+            }
+        }
+        
+    except Exception as e:
+        print(f"Error en análisis de estadísticas del sistema: {str(e)}")
+        print(traceback.format_exc())
+        return {
+            "status": "error",
+            "message": f"Error al generar estadísticas: {str(e)}"
+        }
+
 
 if __name__ == "__main__":
     import uvicorn
