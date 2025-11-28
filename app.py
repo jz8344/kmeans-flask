@@ -176,7 +176,7 @@ class DriverBehaviorAnalysis:
     def fetch_data_from_db(self, db: Session, driver_id: int = None):
         """
         Obtiene datos reales de la base de datos para análisis K-means.
-        Usa datos de viajes, confirmaciones, asistencias y ubicaciones GPS.
+        Usa MÚLTIPLES fuentes: viajes, confirmaciones, rutas, paradas, ubicaciones GPS.
         """
         try:
             # Si se especifica driver_id, filtrar por ese chofer
@@ -188,24 +188,48 @@ class DriverBehaviorAnalysis:
                     logger.warning(f"Chofer {driver_id} no encontrado")
                     return False
                 
-                # Obtener datos de viajes del chofer
+                # Obtener datos completos del chofer
                 query = text("""
                     SELECT 
                         v.id as viaje_id,
                         v.chofer_id,
-                        v.fecha_inicio,
-                        v.fecha_fin,
-                        v.estado,
-                        v.duracion_estimada,
+                        v.estado as viaje_estado,
+                        v.cupo_maximo,
+                        v.cupo_minimo,
+                        v.confirmaciones_actuales,
+                        v.created_at as viaje_creado,
+                        
+                        -- Confirmaciones
                         COUNT(DISTINCT cv.id) as total_confirmaciones,
+                        COUNT(DISTINCT CASE WHEN cv.estado = 'confirmado' THEN cv.id END) as confirmaciones_activas,
+                        
+                        -- Asistencias
                         COUNT(DISTINCT a.id) as total_asistencias,
-                        COALESCE(AVG(EXTRACT(EPOCH FROM (a.hora_registro - cv.created_at))/60), 0) as tiempo_promedio_recogida
+                        COUNT(DISTINCT CASE WHEN a.estado = 'presente' THEN a.id END) as asistencias_presentes,
+                        
+                        -- Rutas
+                        r.distancia_total_km,
+                        r.tiempo_estimado_minutos,
+                        r.estado as ruta_estado,
+                        COUNT(DISTINCT pr.id) as total_paradas,
+                        COUNT(DISTINCT CASE WHEN pr.estado = 'completada' THEN pr.id END) as paradas_completadas,
+                        
+                        -- Ubicaciones GPS (velocidad promedio y total de reportes)
+                        COUNT(DISTINCT uc.id) as total_ubicaciones_gps,
+                        COALESCE(AVG(uc.velocidad), 0) as velocidad_promedio_ms,
+                        COALESCE(MAX(uc.velocidad), 0) as velocidad_maxima_ms
+                        
                     FROM viajes v
                     LEFT JOIN confirmaciones_viaje cv ON cv.viaje_id = v.id
                     LEFT JOIN asistencias a ON a.viaje_id = v.id
+                    LEFT JOIN rutas r ON r.viaje_id = v.id
+                    LEFT JOIN paradas_ruta pr ON pr.ruta_id = r.id
+                    LEFT JOIN ubicaciones_chofer uc ON uc.viaje_id = v.id AND uc.chofer_id = v.chofer_id
                     WHERE v.chofer_id = :driver_id
-                    GROUP BY v.id, v.chofer_id, v.fecha_inicio, v.fecha_fin, v.estado, v.duracion_estimada
-                    ORDER BY v.fecha_inicio DESC
+                    GROUP BY v.id, v.chofer_id, v.estado, v.cupo_maximo, v.cupo_minimo, 
+                             v.confirmaciones_actuales, v.created_at, r.id, r.distancia_total_km, 
+                             r.tiempo_estimado_minutos, r.estado
+                    ORDER BY v.created_at DESC
                     LIMIT 100
                 """)
                 result = db.execute(query, {"driver_id": driver_id})
@@ -217,20 +241,43 @@ class DriverBehaviorAnalysis:
                         v.chofer_id,
                         c.nombre as chofer_nombre,
                         c.apellidos as chofer_apellidos,
-                        v.fecha_inicio,
-                        v.fecha_fin,
-                        v.estado,
-                        v.duracion_estimada,
+                        v.estado as viaje_estado,
+                        v.cupo_maximo,
+                        v.cupo_minimo,
+                        v.confirmaciones_actuales,
+                        v.created_at as viaje_creado,
+                        
+                        -- Confirmaciones
                         COUNT(DISTINCT cv.id) as total_confirmaciones,
+                        COUNT(DISTINCT CASE WHEN cv.estado = 'confirmado' THEN cv.id END) as confirmaciones_activas,
+                        
+                        -- Asistencias  
                         COUNT(DISTINCT a.id) as total_asistencias,
-                        COALESCE(AVG(EXTRACT(EPOCH FROM (a.hora_registro - cv.created_at))/60), 0) as tiempo_promedio_recogida
+                        COUNT(DISTINCT CASE WHEN a.estado = 'presente' THEN a.id END) as asistencias_presentes,
+                        
+                        -- Rutas
+                        r.distancia_total_km,
+                        r.tiempo_estimado_minutos,
+                        r.estado as ruta_estado,
+                        COUNT(DISTINCT pr.id) as total_paradas,
+                        COUNT(DISTINCT CASE WHEN pr.estado = 'completada' THEN pr.id END) as paradas_completadas,
+                        
+                        -- Ubicaciones GPS
+                        COUNT(DISTINCT uc.id) as total_ubicaciones_gps,
+                        COALESCE(AVG(uc.velocidad), 0) as velocidad_promedio_ms,
+                        COALESCE(MAX(uc.velocidad), 0) as velocidad_maxima_ms
+                        
                     FROM viajes v
                     LEFT JOIN choferes c ON c.id = v.chofer_id
                     LEFT JOIN confirmaciones_viaje cv ON cv.viaje_id = v.id
                     LEFT JOIN asistencias a ON a.viaje_id = v.id
-                    WHERE v.fecha_inicio >= NOW() - INTERVAL '6 months'
-                    GROUP BY v.id, v.chofer_id, c.nombre, c.apellidos, v.fecha_inicio, v.fecha_fin, v.estado, v.duracion_estimada
-                    ORDER BY v.fecha_inicio DESC
+                    LEFT JOIN rutas r ON r.viaje_id = v.id
+                    LEFT JOIN paradas_ruta pr ON pr.ruta_id = r.id
+                    LEFT JOIN ubicaciones_chofer uc ON uc.viaje_id = v.id AND uc.chofer_id = v.chofer_id
+                    GROUP BY v.id, v.chofer_id, c.nombre, c.apellidos, v.estado, v.cupo_maximo, 
+                             v.cupo_minimo, v.confirmaciones_actuales, v.created_at, r.id,
+                             r.distancia_total_km, r.tiempo_estimado_minutos, r.estado
+                    ORDER BY v.created_at DESC
                     LIMIT 500
                 """)
                 result = db.execute(query)
@@ -241,7 +288,7 @@ class DriverBehaviorAnalysis:
                 logger.warning("No se encontraron datos de viajes")
                 return False
             
-            # Convertir a DataFrame
+            # Convertir a DataFrame con TODAS las métricas
             data = []
             for row in rows:
                 data.append({
@@ -249,40 +296,81 @@ class DriverBehaviorAnalysis:
                     'chofer_id': row.chofer_id,
                     'chofer_nombre': getattr(row, 'chofer_nombre', 'N/A'),
                     'chofer_apellidos': getattr(row, 'chofer_apellidos', 'N/A'),
-                    'fecha_inicio': row.fecha_inicio,
-                    'fecha_fin': row.fecha_fin,
-                    'estado': row.estado,
-                    'duracion_estimada': row.duracion_estimada or 0,
+                    'viaje_estado': row.viaje_estado,
+                    'cupo_maximo': row.cupo_maximo or 0,
+                    'cupo_minimo': row.cupo_minimo or 0,
+                    'confirmaciones_actuales': row.confirmaciones_actuales or 0,
+                    
+                    # Confirmaciones
                     'total_confirmaciones': row.total_confirmaciones or 0,
+                    'confirmaciones_activas': row.confirmaciones_activas or 0,
+                    
+                    # Asistencias
                     'total_asistencias': row.total_asistencias or 0,
-                    'tiempo_promedio_recogida': float(row.tiempo_promedio_recogida or 0)
+                    'asistencias_presentes': row.asistencias_presentes or 0,
+                    
+                    # Rutas
+                    'distancia_total_km': float(row.distancia_total_km or 0),
+                    'tiempo_estimado_minutos': row.tiempo_estimado_minutos or 0,
+                    'ruta_estado': row.ruta_estado or 'sin_ruta',
+                    'total_paradas': row.total_paradas or 0,
+                    'paradas_completadas': row.paradas_completadas or 0,
+                    
+                    # GPS
+                    'total_ubicaciones_gps': row.total_ubicaciones_gps or 0,
+                    'velocidad_promedio_ms': float(row.velocidad_promedio_ms or 0),
+                    'velocidad_maxima_ms': float(row.velocidad_maxima_ms or 0)
                 })
             
             self.df = pd.DataFrame(data)
             
-            # Calcular métricas adicionales
+            # ===== CALCULAR MÉTRICAS DERIVADAS =====
+            
+            # 1. Tasa de asistencia (presentes / confirmaciones)
             self.df['tasa_asistencia'] = np.where(
                 self.df['total_confirmaciones'] > 0,
-                (self.df['total_asistencias'] / self.df['total_confirmaciones'] * 100),
+                (self.df['asistencias_presentes'] / self.df['total_confirmaciones'] * 100),
                 0
             )
             
-            # Duración real del viaje (si tiene fecha_fin)
-            self.df['duracion_real'] = self.df.apply(
-                lambda x: (x['fecha_fin'] - x['fecha_inicio']).total_seconds() / 60 
-                if pd.notnull(x['fecha_fin']) and pd.notnull(x['fecha_inicio']) 
-                else x['duracion_estimada'], 
-                axis=1
+            # 2. Tasa de ocupación (confirmaciones / cupo máximo)
+            self.df['tasa_ocupacion'] = np.where(
+                self.df['cupo_maximo'] > 0,
+                (self.df['confirmaciones_actuales'] / self.df['cupo_maximo'] * 100),
+                0
             )
             
-            # Eficiencia (duración real vs estimada)
-            self.df['eficiencia'] = np.where(
-                self.df['duracion_estimada'] > 0,
-                (self.df['duracion_estimada'] / self.df['duracion_real'] * 100).clip(0, 200),
-                100
+            # 3. Eficiencia de ruta (paradas completadas / total paradas)
+            self.df['eficiencia_ruta'] = np.where(
+                self.df['total_paradas'] > 0,
+                (self.df['paradas_completadas'] / self.df['total_paradas'] * 100),
+                0
             )
             
-            logger.info(f"Se cargaron {len(self.df)} registros de viajes para análisis")
+            # 4. Velocidad promedio en km/h
+            self.df['velocidad_promedio_kmh'] = self.df['velocidad_promedio_ms'] * 3.6
+            self.df['velocidad_maxima_kmh'] = self.df['velocidad_maxima_ms'] * 3.6
+            
+            # 5. Actividad GPS (reportes por viaje)
+            self.df['actividad_gps'] = self.df['total_ubicaciones_gps']
+            
+            # 6. Score de puntualidad (basado en reportes GPS y paradas completadas)
+            self.df['score_puntualidad'] = np.where(
+                (self.df['total_paradas'] > 0) & (self.df['actividad_gps'] > 0),
+                ((self.df['eficiencia_ruta'] * 0.7) + (np.minimum(self.df['actividad_gps'] / 10, 30))),
+                self.df['eficiencia_ruta']
+            )
+            
+            # 7. Score general (combinación de múltiples métricas)
+            self.df['score_general'] = (
+                (self.df['tasa_asistencia'] * 0.3) +
+                (self.df['tasa_ocupacion'] * 0.2) +
+                (self.df['eficiencia_ruta'] * 0.3) +
+                (self.df['score_puntualidad'] * 0.2)
+            )
+            
+            logger.info(f"✅ Se cargaron {len(self.df)} registros de viajes con métricas completas")
+            logger.info(f"   Métricas disponibles: {list(self.df.columns)}")
             return True
             
         except Exception as e:
@@ -292,16 +380,26 @@ class DriverBehaviorAnalysis:
     def find_optimal_clusters(self, max_clusters=6):
         """
         Encuentra el número óptimo de clusters usando el método del codo y silhouette score.
-        Usa métricas reales de los choferes: tasa de asistencia, eficiencia, tiempo de recogida.
+        Usa MÚLTIPLES métricas: asistencia, ocupación, eficiencia de ruta, GPS, velocidad.
         """
-        # Seleccionar features relevantes
-        feature_cols = ['tasa_asistencia', 'eficiencia', 'tiempo_promedio_recogida', 'total_confirmaciones']
+        # Priorizar features más importantes (ordenadas por relevancia)
+        priority_features = [
+            'score_general',           # Score combinado
+            'tasa_asistencia',         # Asistencia real
+            'tasa_ocupacion',          # Ocupación del vehículo
+            'eficiencia_ruta',         # Completitud de rutas
+            'score_puntualidad',       # Puntualidad
+            'velocidad_promedio_kmh',  # Velocidad de conducción
+            'actividad_gps',           # Actividad del dispositivo
+            'total_confirmaciones',    # Volumen de trabajo
+            'distancia_total_km'       # Distancia recorrida
+        ]
         
-        # Verificar que existen las columnas
-        available_features = [col for col in feature_cols if col in self.df.columns]
+        # Seleccionar las features que existen en el DataFrame
+        available_features = [col for col in priority_features if col in self.df.columns]
         
         if len(available_features) < 2:
-            logger.warning("No hay suficientes features para clustering, usando valores por defecto")
+            logger.warning(f"Solo {len(available_features)} features disponibles, usando por defecto 3 clusters")
             return 3
         
         features = self.df[available_features].fillna(0)
@@ -344,15 +442,22 @@ class DriverBehaviorAnalysis:
     def perform_clustering(self, n_clusters=3):
         """
         Realiza clustering K-means sobre datos reales de choferes.
-        Features: tasa_asistencia, eficiencia, tiempo_promedio_recogida
+        Usa múltiples features para análisis robusto.
         """
-        # Seleccionar features para clustering
-        feature_cols = ['tasa_asistencia', 'eficiencia', 'tiempo_promedio_recogida']
-        available_features = [col for col in feature_cols if col in self.df.columns]
+        # Usar las mismas features que en find_optimal_clusters
+        priority_features = [
+            'score_general', 'tasa_asistencia', 'tasa_ocupacion', 'eficiencia_ruta',
+            'score_puntualidad', 'velocidad_promedio_kmh', 'actividad_gps',
+            'total_confirmaciones', 'distancia_total_km'
+        ]
+        
+        available_features = [col for col in priority_features if col in self.df.columns]
         
         if len(available_features) == 0:
             logger.error("No hay features disponibles para clustering")
             raise ValueError("No hay columnas válidas para realizar clustering")
+        
+        logger.info(f"Usando {len(available_features)} features para clustering: {available_features}")
         
         features = self.df[available_features].fillna(0)
         
@@ -366,11 +471,13 @@ class DriverBehaviorAnalysis:
         self.kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
         self.df['cluster'] = self.kmeans.fit_predict(scaled_features)
         
-        # Etiquetar clusters basándose en tasa de asistencia (métrica principal)
-        if 'tasa_asistencia' in self.df.columns:
+        # Etiquetar clusters basándose en score_general (métrica combinada)
+        if 'score_general' in self.df.columns:
+            cluster_means = self.df.groupby('cluster')['score_general'].mean()
+        elif 'tasa_asistencia' in self.df.columns:
             cluster_means = self.df.groupby('cluster')['tasa_asistencia'].mean()
-        elif 'eficiencia' in self.df.columns:
-            cluster_means = self.df.groupby('cluster')['eficiencia'].mean()
+        elif 'tasa_ocupacion' in self.df.columns:
+            cluster_means = self.df.groupby('cluster')['tasa_ocupacion'].mean()
         else:
             cluster_means = self.df.groupby('cluster').size()
         
@@ -390,7 +497,7 @@ class DriverBehaviorAnalysis:
                 
         self.df['status'] = self.df['cluster'].map(cluster_labels)
         
-        # Calcular estadísticas por cluster
+        # Calcular estadísticas COMPLETAS por cluster
         stats = {}
         for cluster in sorted(self.df['cluster'].unique()):
             cluster_data = self.df[self.df['cluster'] == cluster]
@@ -398,13 +505,34 @@ class DriverBehaviorAnalysis:
             stats[str(cluster)] = {
                 "status": cluster_labels.get(cluster, f"Cluster {cluster}"),
                 "count": int(len(cluster_data)),
+                
+                # Score general
+                "score_general_mean": float(cluster_data['score_general'].mean()) if 'score_general' in cluster_data else 0,
+                "score_general_std": float(cluster_data['score_general'].std()) if 'score_general' in cluster_data else 0,
+                
+                # Asistencias
                 "tasa_asistencia_mean": float(cluster_data['tasa_asistencia'].mean()) if 'tasa_asistencia' in cluster_data else 0,
                 "tasa_asistencia_std": float(cluster_data['tasa_asistencia'].std()) if 'tasa_asistencia' in cluster_data else 0,
-                "eficiencia_mean": float(cluster_data['eficiencia'].mean()) if 'eficiencia' in cluster_data else 0,
-                "eficiencia_std": float(cluster_data['eficiencia'].std()) if 'eficiencia' in cluster_data else 0,
-                "tiempo_recogida_mean": float(cluster_data['tiempo_promedio_recogida'].mean()) if 'tiempo_promedio_recogida' in cluster_data else 0,
-                "tiempo_recogida_std": float(cluster_data['tiempo_promedio_recogida'].std()) if 'tiempo_promedio_recogida' in cluster_data else 0,
-                "total_confirmaciones_mean": float(cluster_data['total_confirmaciones'].mean()) if 'total_confirmaciones' in cluster_data else 0
+                
+                # Ocupación
+                "tasa_ocupacion_mean": float(cluster_data['tasa_ocupacion'].mean()) if 'tasa_ocupacion' in cluster_data else 0,
+                "tasa_ocupacion_std": float(cluster_data['tasa_ocupacion'].std()) if 'tasa_ocupacion' in cluster_data else 0,
+                
+                # Eficiencia de ruta
+                "eficiencia_ruta_mean": float(cluster_data['eficiencia_ruta'].mean()) if 'eficiencia_ruta' in cluster_data else 0,
+                "eficiencia_ruta_std": float(cluster_data['eficiencia_ruta'].std()) if 'eficiencia_ruta' in cluster_data else 0,
+                
+                # Puntualidad
+                "score_puntualidad_mean": float(cluster_data['score_puntualidad'].mean()) if 'score_puntualidad' in cluster_data else 0,
+                
+                # Velocidad
+                "velocidad_promedio_kmh_mean": float(cluster_data['velocidad_promedio_kmh'].mean()) if 'velocidad_promedio_kmh' in cluster_data else 0,
+                "velocidad_maxima_kmh_mean": float(cluster_data['velocidad_maxima_kmh'].mean()) if 'velocidad_maxima_kmh' in cluster_data else 0,
+                
+                # Actividad
+                "actividad_gps_mean": float(cluster_data['actividad_gps'].mean()) if 'actividad_gps' in cluster_data else 0,
+                "total_confirmaciones_mean": float(cluster_data['total_confirmaciones'].mean()) if 'total_confirmaciones' in cluster_data else 0,
+                "distancia_total_km_mean": float(cluster_data['distancia_total_km'].mean()) if 'distancia_total_km' in cluster_data else 0
             }
             
         return stats, cluster_labels
@@ -437,27 +565,58 @@ class DriverBehaviorAnalysis:
         plt.rcParams['figure.figsize'] = (10, 6)
         
         try:
-            # 1. Gráfica de dispersión: Tasa de Asistencia vs Eficiencia
-            if 'tasa_asistencia' in self.df.columns and 'eficiencia' in self.df.columns:
-                fig, ax = plt.subplots(figsize=(10, 6))
+            # 1. Gráfica de dispersión: Score General vs Eficiencia de Ruta
+            if 'score_general' in self.df.columns and 'eficiencia_ruta' in self.df.columns:
+                fig, ax = plt.subplots(figsize=(12, 7))
+                
+                for cluster in sorted(self.df['cluster'].unique()):
+                    cluster_data = self.df[self.df['cluster'] == cluster]
+                    scatter = ax.scatter(
+                        cluster_data['score_general'], 
+                        cluster_data['eficiencia_ruta'],
+                        label=cluster_data['status'].iloc[0] if len(cluster_data) > 0 else f'Cluster {cluster}',
+                        alpha=0.7,
+                        s=150,
+                        edgecolors='black',
+                        linewidth=0.5
+                    )
+                
+                ax.set_xlabel('Score General (Combinado)', fontsize=13, fontweight='bold')
+                ax.set_ylabel('Eficiencia de Ruta (%)', fontsize=13, fontweight='bold')
+                ax.set_title('Clustering de Conductores: Desempeño General vs Eficiencia', 
+                            fontsize=15, fontweight='bold', pad=20)
+                ax.legend(loc='best', frameon=True, shadow=True, fontsize=11)
+                ax.grid(True, alpha=0.3, linestyle='--')
+                ax.set_xlim(left=0)
+                ax.set_ylim(bottom=0)
+                
+                plots['scatter_score_eficiencia'] = self._fig_to_base64(fig)
+                plt.close(fig)
+            
+            # 1b. Scatter alternativo: Ocupación vs Asistencia
+            elif 'tasa_ocupacion' in self.df.columns and 'tasa_asistencia' in self.df.columns:
+                fig, ax = plt.subplots(figsize=(12, 7))
                 
                 for cluster in sorted(self.df['cluster'].unique()):
                     cluster_data = self.df[self.df['cluster'] == cluster]
                     ax.scatter(
-                        cluster_data['tasa_asistencia'], 
-                        cluster_data['eficiencia'],
+                        cluster_data['tasa_ocupacion'], 
+                        cluster_data['tasa_asistencia'],
                         label=cluster_data['status'].iloc[0] if len(cluster_data) > 0 else f'Cluster {cluster}',
-                        alpha=0.6,
-                        s=100
+                        alpha=0.7,
+                        s=150,
+                        edgecolors='black',
+                        linewidth=0.5
                     )
                 
-                ax.set_xlabel('Tasa de Asistencia (%)', fontsize=12)
-                ax.set_ylabel('Eficiencia (%)', fontsize=12)
-                ax.set_title('Clustering de Choferes: Asistencia vs Eficiencia', fontsize=14, fontweight='bold')
-                ax.legend()
-                ax.grid(True, alpha=0.3)
+                ax.set_xlabel('Tasa de Ocupación (%)', fontsize=13, fontweight='bold')
+                ax.set_ylabel('Tasa de Asistencia (%)', fontsize=13, fontweight='bold')
+                ax.set_title('Clustering de Conductores: Ocupación vs Asistencia', 
+                            fontsize=15, fontweight='bold', pad=20)
+                ax.legend(loc='best', frameon=True, shadow=True)
+                ax.grid(True, alpha=0.3, linestyle='--')
                 
-                plots['scatter_asistencia_eficiencia'] = self._fig_to_base64(fig)
+                plots['scatter_ocupacion_asistencia'] = self._fig_to_base64(fig)
                 plt.close(fig)
             
             # 2. Método del Codo (Elbow Method)
@@ -499,31 +658,50 @@ class DriverBehaviorAnalysis:
             plots['cluster_distribution'] = self._fig_to_base64(fig)
             plt.close(fig)
             
-            # 4. Box plot de métricas por cluster
-            if 'tasa_asistencia' in self.df.columns:
-                fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+            # 4. Box plots de TODAS las métricas principales
+            metrics_to_plot = []
+            titles = []
+            ylabels = []
+            
+            if 'score_general' in self.df.columns:
+                metrics_to_plot.append('score_general')
+                titles.append('Score General')
+                ylabels.append('Score (0-100)')
+            
+            if 'tasa_ocupacion' in self.df.columns:
+                metrics_to_plot.append('tasa_ocupacion')
+                titles.append('Tasa de Ocupación')
+                ylabels.append('Ocupación (%)')
+            
+            if 'eficiencia_ruta' in self.df.columns:
+                metrics_to_plot.append('eficiencia_ruta')
+                titles.append('Eficiencia de Ruta')
+                ylabels.append('Eficiencia (%)')
+            
+            if 'velocidad_promedio_kmh' in self.df.columns:
+                metrics_to_plot.append('velocidad_promedio_kmh')
+                titles.append('Velocidad Promedio')
+                ylabels.append('Velocidad (km/h)')
+            
+            # Si hay métricas para graficar
+            if len(metrics_to_plot) > 0:
+                n_plots = min(len(metrics_to_plot), 4)  # Máximo 4 gráficas
+                fig, axes = plt.subplots(1, n_plots, figsize=(5*n_plots, 6))
                 
-                # Tasa de Asistencia
-                self.df.boxplot(column='tasa_asistencia', by='status', ax=axes[0])
-                axes[0].set_title('Tasa de Asistencia por Cluster')
-                axes[0].set_xlabel('')
-                axes[0].set_ylabel('Tasa de Asistencia (%)')
+                # Si solo hay 1 gráfica, axes no es array
+                if n_plots == 1:
+                    axes = [axes]
                 
-                # Eficiencia
-                if 'eficiencia' in self.df.columns:
-                    self.df.boxplot(column='eficiencia', by='status', ax=axes[1])
-                    axes[1].set_title('Eficiencia por Cluster')
-                    axes[1].set_xlabel('')
-                    axes[1].set_ylabel('Eficiencia (%)')
+                for i, (metric, title, ylabel) in enumerate(zip(metrics_to_plot[:n_plots], titles[:n_plots], ylabels[:n_plots])):
+                    self.df.boxplot(column=metric, by='status', ax=axes[i], patch_artist=True)
+                    axes[i].set_title(title, fontsize=12, fontweight='bold')
+                    axes[i].set_xlabel('')
+                    axes[i].set_ylabel(ylabel, fontsize=11)
+                    axes[i].tick_params(axis='x', rotation=45)
+                    axes[i].grid(True, alpha=0.3, linestyle='--')
                 
-                # Tiempo de Recogida
-                if 'tiempo_promedio_recogida' in self.df.columns:
-                    self.df.boxplot(column='tiempo_promedio_recogida', by='status', ax=axes[2])
-                    axes[2].set_title('Tiempo Promedio de Recogida por Cluster')
-                    axes[2].set_xlabel('')
-                    axes[2].set_ylabel('Tiempo (minutos)')
-                
-                plt.suptitle('Análisis de Métricas por Cluster', fontsize=14, fontweight='bold', y=1.02)
+                plt.suptitle('Análisis de Métricas por Cluster (Datos Reales)', 
+                            fontsize=14, fontweight='bold', y=1.02)
                 plt.tight_layout()
                 plots['boxplot_metrics'] = self._fig_to_base64(fig)
                 plt.close(fig)
