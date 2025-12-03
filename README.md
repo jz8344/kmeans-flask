@@ -77,7 +77,7 @@ Ver [DEPLOYMENT.md](./DEPLOYMENT.md) para instrucciones completas.
 ```bash
 PORT=5000
 FLASK_ENV=production
-DATABASE_URL=postgresql://postgres:qDVMmSkqHnhMHRoDSfKHeijDCtKnjpkg@hopper.proxy.rlwy.net:36076/railway?sslmode=require
+DATABASE_URL=ulrbd
 FRONTEND_URL=https://frontend-production-a12b.up.railway.app
 LARAVEL_API_URL=https://web-production-86356.up.railway.app
 ```
