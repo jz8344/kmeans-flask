@@ -35,6 +35,9 @@ app = FastAPI(
 # Configuración de CORS mejorada para Railway
 # IMPORTANTE: No usar allow_credentials=True con wildcard "*"
 ALLOWED_ORIGINS = [
+    "https://trailynsafe.lat",
+    "https://api.trailynsafe.lat",
+    "https://ml.trailynsafe.lat",
     "https://frontend-production-a12b.up.railway.app",
     "https://web-production-86356.up.railway.app",
     "http://localhost:5173",
@@ -778,7 +781,7 @@ def test_analyze():
     return {
         "message": "El servicio está funcionando correctamente",
         "instructions": "Este endpoint requiere POST con JSON: {driver_id: 1, n_samples: 1000}",
-        "example_curl": "curl -X POST https://kmeans-flask-production.up.railway.app/api/analyze/driver -H 'Content-Type: application/json' -d '{\"driver_id\":1,\"n_samples\":100}'"
+        "example_curl": "curl -X POST https://ml.trailynsafe.lat/api/analyze/driver -H 'Content-Type: application/json' -d '{\"driver_id\":1,\"n_samples\":100}'"
     }
 
 @app.post("/api/analyze/driver")
@@ -1422,6 +1425,66 @@ async def analyze_system_stats(db: Session = Depends(get_db)):
             "message": f"Error al generar estadísticas: {str(e)}"
         }
 
+# ==================== ENDPOINTS DE SOPORTE LLM ====================
+
+# Importamos la lógica del agente LLM
+try:
+    from support_agent import generate_chat_response, generate_chat_summary
+    LLM_AVAILABLE = True
+except ImportError as e:
+    logger.error(f"Error importando support_agent: {e}. ¿Instalaste groq?")
+    LLM_AVAILABLE = False
+
+class ChatRequest(BaseModel):
+    ticket_id: int
+    message: str
+    history: List[Dict[str, str]] = []
+
+class SummaryRequest(BaseModel):
+    ticket_id: int
+    history: List[Dict[str, str]] = []
+
+@app.options("/api/support/chat")
+def options_support_chat():
+    return {"message": "OK"}
+
+@app.post("/api/support/chat")
+def support_chat(request: ChatRequest):
+    if not LLM_AVAILABLE:
+        raise HTTPException(status_code=503, detail="El soporte AI no está disponible (Falta módulo groq)")
+        
+    if not os.getenv("GROQ_API_KEY"):
+        raise HTTPException(status_code=500, detail="GROQ_API_KEY no configurada en el servidor")
+
+    # Añadimos el nuevo mensaje al historial para enviar el contexto completo a la API
+    history = request.history.copy()
+    history.append({"role": "user", "content": request.message})
+    
+    result = generate_chat_response(history)
+    
+    if not result["success"]:
+        raise HTTPException(status_code=500, detail=result.get("error", "Error desconocido"))
+        
+    return {
+        "success": True,
+        "response": result["response"],
+        "escalate": result["escalate"]
+    }
+
+@app.post("/api/support/summary")
+def support_summary(request: SummaryRequest):
+    if not LLM_AVAILABLE:
+        raise HTTPException(status_code=503, detail="El soporte AI no está disponible (Falta módulo groq)")
+        
+    result = generate_chat_summary(request.history)
+    
+    if not result["success"]:
+        raise HTTPException(status_code=500, detail=result.get("error", "Error desconocido"))
+        
+    return {
+        "success": True,
+        "summary": result["summary"]
+    }
 
 if __name__ == "__main__":
     import uvicorn
