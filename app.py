@@ -1505,7 +1505,7 @@ def support_chat_gemini(request: ChatRequest):
     history = request.history.copy()
     history.append({"role": "user", "content": request.message})
     
-    result = generate_chat_response_gemini("gemini-1.5-flash", history)
+    result = generate_chat_response_gemini(history)
     
     if not result["success"]:
         raise HTTPException(status_code=500, detail=result.get("error", "Error desconocido"))
@@ -1521,7 +1521,7 @@ def support_summary_gemini(request: SummaryRequest):
     if not LLM_AVAILABLE:
         raise HTTPException(status_code=503, detail="El soporte AI no está disponible")
         
-    result = generate_chat_summary_gemini("gemini-1.5-flash", request.history)
+    result = generate_chat_summary_gemini(request.history)
     
     if not result["success"]:
         raise HTTPException(status_code=500, detail=result.get("error", "Error desconocido"))
