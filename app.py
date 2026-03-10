@@ -1430,8 +1430,7 @@ async def analyze_system_stats(db: Session = Depends(get_db)):
 # Importamos la lógica del agente LLM
 try:
     from support_agent import (
-        generate_chat_response, generate_chat_summary,
-        generate_chat_response_gemini, generate_chat_summary_gemini
+        generate_chat_response, generate_chat_summary
     )
     LLM_AVAILABLE = True
 except ImportError as e:
@@ -1498,14 +1497,15 @@ def support_chat_gemini(request: ChatRequest):
     if not LLM_AVAILABLE:
         raise HTTPException(status_code=503, detail="El soporte AI no está disponible")
         
-    if not os.getenv("GEMINI_API_KEY"):
-        raise HTTPException(status_code=500, detail="GEMINI_API_KEY no configurada en el servidor")
+    if not os.getenv("GROQ_API_KEY"):
+        raise HTTPException(status_code=500, detail="GROQ_API_KEY no configurada en el servidor")
 
     # Añadimos el nuevo mensaje al historial
     history = request.history.copy()
     history.append({"role": "user", "content": request.message})
     
-    result = generate_chat_response_gemini(history)
+    # Redirigido a Groq para mantener compatibilidad con las apps
+    result = generate_chat_response(history)
     
     if not result["success"]:
         raise HTTPException(status_code=500, detail=result.get("error", "Error desconocido"))
@@ -1521,7 +1521,8 @@ def support_summary_gemini(request: SummaryRequest):
     if not LLM_AVAILABLE:
         raise HTTPException(status_code=503, detail="El soporte AI no está disponible")
         
-    result = generate_chat_summary_gemini(request.history)
+    # Redirigido a Groq
+    result = generate_chat_summary(request.history)
     
     if not result["success"]:
         raise HTTPException(status_code=500, detail=result.get("error", "Error desconocido"))
