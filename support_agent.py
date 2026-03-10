@@ -1,6 +1,7 @@
 import os
 import logging
 from groq import Groq
+import google.generativeai as genai
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -8,6 +9,7 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 client = Groq()
+genai.configure(api_key=os.getenv("GEMINI_API_KEY", ""))
 
 SYSTEM_PROMPT = """Eres el Asistente Virtual de TrailynSafe, una plataforma de transporte escolar seguro.
 
@@ -206,6 +208,84 @@ def generate_chat_summary(history: list[dict]):
 
     except Exception as e:
         logger.error(f"Error generating summary: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+        }
+
+# ==============================================================
+# GEMINI (Móvil / App Choferes)
+# ==============================================================
+
+def generate_chat_response_gemini(history: list[dict]):
+    """
+    Genera una respuesta usando Gemini. (Diseñado para la app de choferes)
+    """
+    try:
+        model = genai.GenerativeModel(
+            model_name="gemini-1.5-flash",
+            system_instruction=SYSTEM_PROMPT
+        )
+        
+        formatted_history = []
+        # El historial de Gemini requiere roles: "user" y "model"
+        for msg in history[:-1]:  # Todo menos el último que es el mensaje actual
+            role = "user" if msg.get("role") == "user" else "model"
+            formatted_history.append({"role": role, "parts": [msg.get("content", "")]})
+            
+        chat = model.start_chat(history=formatted_history)
+        
+        last_msg = history[-1].get("content", "") if history else "Hola"
+        response = chat.send_message(last_msg, generation_config={"temperature": 0.5})
+        response_text = response.text
+        
+        escalate = False
+        if "ESCALAR_A_HUMANO" in response_text:
+            escalate = True
+            response_text = response_text.replace("ESCALAR_A_HUMANO", "").strip()
+
+        return {
+            "success": True,
+            "response": response_text,
+            "escalate": escalate,
+        }
+        
+    except Exception as e:
+        logger.error(f"Error calling Gemini API: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+        }
+
+def generate_chat_summary_gemini(history: list[dict]):
+    """
+    Genera un resumen del chat usando Gemini para el agente humano.
+    """
+    chat_text = "\n".join(
+        [f"{msg['role'].upper()}: {msg['content']}" for msg in history]
+    )
+
+    summary_prompt = (
+        "Lee la siguiente conversación de soporte técnico de TrailynSafe y escribe "
+        "un resumen de 2 a 3 líneas para el agente humano que va a tomar el caso. "
+        "Indica cuál es el problema del usuario, qué se intentó resolver y cuál es el estado actual.\n\n"
+        f"Conversación:\n{chat_text}"
+    )
+
+    try:
+        model = genai.GenerativeModel(
+            model_name="gemini-1.5-flash",
+            system_instruction="Eres un asistente interno de TrailynSafe. Redacta resúmenes breves, claros y directos para agentes de soporte humanos."
+        )
+        response = model.generate_content(summary_prompt, generation_config={"temperature": 0.3})
+
+        return {
+            "success": True,
+            "summary": response.text.strip(),
+        }
+
+    except Exception as e:
+        logger.error(f"Error generating summary Gemini: {e}")
         return {
             "success": False,
             "error": str(e),

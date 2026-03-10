@@ -1429,10 +1429,13 @@ async def analyze_system_stats(db: Session = Depends(get_db)):
 
 # Importamos la lógica del agente LLM
 try:
-    from support_agent import generate_chat_response, generate_chat_summary
+    from support_agent import (
+        generate_chat_response, generate_chat_summary,
+        generate_chat_response_gemini, generate_chat_summary_gemini
+    )
     LLM_AVAILABLE = True
 except ImportError as e:
-    logger.error(f"Error importando support_agent: {e}. ¿Instalaste groq?")
+    logger.error(f"Error importando support_agent: {e}. ¿Falta módulo base?")
     LLM_AVAILABLE = False
 
 class ChatRequest(BaseModel):
@@ -1477,6 +1480,48 @@ def support_summary(request: SummaryRequest):
         raise HTTPException(status_code=503, detail="El soporte AI no está disponible (Falta módulo groq)")
         
     result = generate_chat_summary(request.history)
+    
+    if not result["success"]:
+        raise HTTPException(status_code=500, detail=result.get("error", "Error desconocido"))
+        
+    return {
+        "success": True,
+        "summary": result["summary"]
+    }
+
+@app.options("/api/support/chat/gemini")
+def options_support_chat_gemini():
+    return {"message": "OK"}
+
+@app.post("/api/support/chat/gemini")
+def support_chat_gemini(request: ChatRequest):
+    if not LLM_AVAILABLE:
+        raise HTTPException(status_code=503, detail="El soporte AI no está disponible")
+        
+    if not os.getenv("GEMINI_API_KEY"):
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY no configurada en el servidor")
+
+    # Añadimos el nuevo mensaje al historial
+    history = request.history.copy()
+    history.append({"role": "user", "content": request.message})
+    
+    result = generate_chat_response_gemini("gemini-1.5-flash", history)
+    
+    if not result["success"]:
+        raise HTTPException(status_code=500, detail=result.get("error", "Error desconocido"))
+        
+    return {
+        "success": True,
+        "response": result["response"],
+        "escalate": result["escalate"]
+    }
+
+@app.post("/api/support/summary/gemini")
+def support_summary_gemini(request: SummaryRequest):
+    if not LLM_AVAILABLE:
+        raise HTTPException(status_code=503, detail="El soporte AI no está disponible")
+        
+    result = generate_chat_summary_gemini("gemini-1.5-flash", request.history)
     
     if not result["success"]:
         raise HTTPException(status_code=500, detail=result.get("error", "Error desconocido"))
