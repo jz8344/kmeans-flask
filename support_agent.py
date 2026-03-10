@@ -1,7 +1,8 @@
 import os
 import logging
 from groq import Groq
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -9,7 +10,7 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 client = Groq()
-genai.configure(api_key=os.getenv("GEMINI_API_KEY", ""))
+gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY", ""))
 
 SYSTEM_PROMPT = """Eres el Asistente Virtual de TrailynSafe, una plataforma de transporte escolar seguro.
 
@@ -222,21 +223,23 @@ def generate_chat_response_gemini(history: list[dict]):
     Genera una respuesta usando Gemini. (Diseñado para la app de choferes)
     """
     try:
-        model = genai.GenerativeModel(
-            model_name="gemini-2.0-flash",
-            system_instruction=SYSTEM_PROMPT
-        )
-        
         formatted_history = []
         # El historial de Gemini requiere roles: "user" y "model"
         for msg in history[:-1]:  # Todo menos el último que es el mensaje actual
             role = "user" if msg.get("role") == "user" else "model"
-            formatted_history.append({"role": role, "parts": [msg.get("content", "")]})
+            formatted_history.append(types.Content(role=role, parts=[types.Part.from_text(text=msg.get("content", ""))]))
             
-        chat = model.start_chat(history=formatted_history)
+        chat = gemini_client.chats.create(
+            model="gemini-2.0-flash",
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_PROMPT,
+                temperature=0.5
+            ),
+            history=formatted_history
+        )
         
         last_msg = history[-1].get("content", "") if history else "Hola"
-        response = chat.send_message(last_msg, generation_config={"temperature": 0.5})
+        response = chat.send_message(last_msg)
         response_text = response.text
         
         escalate = False
@@ -273,11 +276,14 @@ def generate_chat_summary_gemini(history: list[dict]):
     )
 
     try:
-        model = genai.GenerativeModel(
-            model_name="gemini-2.0-flash",
-            system_instruction="Eres un asistente interno de TrailynSafe. Redacta resúmenes breves, claros y directos para agentes de soporte humanos."
+        response = gemini_client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=summary_prompt,
+            config=types.GenerateContentConfig(
+                system_instruction="Eres un asistente interno de TrailynSafe. Redacta resúmenes breves, claros y directos para agentes de soporte humanos.",
+                temperature=0.3
+            )
         )
-        response = model.generate_content(summary_prompt, generation_config={"temperature": 0.3})
 
         return {
             "success": True,
