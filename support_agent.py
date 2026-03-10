@@ -230,7 +230,7 @@ def generate_chat_response_gemini(history: list[dict]):
             formatted_history.append(types.Content(role=role, parts=[types.Part.from_text(text=msg.get("content", ""))]))
             
         chat = gemini_client.chats.create(
-            model="gemini-2.0-flash",
+            model="gemini-1.5-flash",
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT,
                 temperature=0.5
@@ -254,11 +254,9 @@ def generate_chat_response_gemini(history: list[dict]):
         }
         
     except Exception as e:
-        logger.error(f"Error calling Gemini API: {e}")
-        return {
-            "success": False,
-            "error": str(e),
-        }
+        logger.error(f"Error calling Gemini API: {e}. Reintentando con Groq...")
+        # Fallback a Groq en caso de error de cuota o región
+        return generate_chat_response(history)
 
 def generate_chat_summary_gemini(history: list[dict]):
     """
@@ -277,7 +275,7 @@ def generate_chat_summary_gemini(history: list[dict]):
 
     try:
         response = gemini_client.models.generate_content(
-            model="gemini-2.0-flash",
+            model="gemini-1.5-flash",
             contents=summary_prompt,
             config=types.GenerateContentConfig(
                 system_instruction="Eres un asistente interno de TrailynSafe. Redacta resúmenes breves, claros y directos para agentes de soporte humanos.",
@@ -291,8 +289,6 @@ def generate_chat_summary_gemini(history: list[dict]):
         }
 
     except Exception as e:
-        logger.error(f"Error generating summary Gemini: {e}")
-        return {
-            "success": False,
-            "error": str(e),
-        }
+        logger.error(f"Error generating summary Gemini: {e}. Reintentando con Groq...")
+        # Fallback a Groq en caso de error
+        return generate_chat_summary(history)
