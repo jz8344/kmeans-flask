@@ -223,7 +223,7 @@ def generate_chat_response_gemini(history: list[dict]):
     """
     try:
         model = genai.GenerativeModel(
-            model_name="gemini-1.5-flash",
+            model_name="gemini-2.0-flash",
             system_instruction=SYSTEM_PROMPT
         )
         
@@ -274,7 +274,7 @@ def generate_chat_summary_gemini(history: list[dict]):
 
     try:
         model = genai.GenerativeModel(
-            model_name="gemini-1.5-flash",
+            model_name="gemini-2.0-flash",
             system_instruction="Eres un asistente interno de TrailynSafe. Redacta resúmenes breves, claros y directos para agentes de soporte humanos."
         )
         response = model.generate_content(summary_prompt, generation_config={"temperature": 0.3})
