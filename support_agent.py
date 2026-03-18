@@ -44,13 +44,6 @@ TrailynSafe tiene cuatro aplicaciones:
    - Se sincroniza automáticamente con la app del conductor
    - Es obligatoria para poder operar un viaje
 
-4. PANEL WEB (para administradores)
-   - Acceso en: trailynsafe.lat
-   - Gestión de escuelas, conductores, padres, viajes y vehículos
-   - Visualización de métricas y estadísticas en tiempo real
-   - Atención de tickets de soporte
-   - Gestión de respaldos
-
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 FLUJO GENERAL DEL SISTEMA
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -212,4 +205,4 @@ def generate_chat_summary(history: list[dict]):
             "success": False,
             "error": str(e),
         }
-
+
